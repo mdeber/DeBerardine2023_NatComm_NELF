@@ -1,0 +1,223 @@
+#!/usr/bin/env Rscript
+######################################## ########################################
+## Usage: processPROseq [options] <bamfile directory>
+## About: This script will quality filter and modify bam files for final export
+##        as bigWig files
+## Dependencies include a number of Bioconductor R packages; this is  satisfied
+## by installing the Bioconductor package rtracklayer
+######################################## ########################################
+
+t.start <- Sys.time() # time run-time
+msgout <- function(...)  write(paste(...), stdout())
+
+suppressPackageStartupMessages({
+    library("optparse")
+    library("parallel")
+})
+
+usage <- "Usage: processPROseq [options] -i <bamfile directory>"
+option_list <- list(
+    make_option(c("-i", "--input-dir"),
+                type = "character",
+                default = NA_character_,
+                help = "Directory containing bam files"),
+    make_option(c("-o", "--outdir-raw"),
+                type = "character",
+                default = getwd(),
+                help = "Directory to output raw readcount bigWig files"),
+    make_option(c("-n", "--outdir-norm"),
+                type = "character",
+                default = getwd(),
+                help = "Directory to output spike-in normalized bigWig files"),
+    make_option(c("--outdir-rds"),
+                type = "character",
+                default = getwd(),
+                help = "Directory to output binary R files (RDS files)"),
+    make_option(c("--metadata-output"),
+                type = "character",
+                default = "NULL",
+                help = "File to write the data table with readcounts and normalization factors"),
+    make_option(c("-s", "--spike-pattern"),
+                type = "character",
+                default = NULL,
+                help = "A regular expression that matches the spike-in chromosome names"),
+    make_option(c("-c", "--control-pattern"),
+                type = "character",
+                default = NULL,
+                help = "A regular expression that matches the names of the negative controls"),
+    make_option(c("--batch-norm"),
+                type = "logical",
+                default = TRUE,
+                help = "Logical indicating if batch normalization is used (TRUE by default)"),
+    make_option(c("-p", "--paired-end"),
+                type = "logical",
+                default = TRUE,
+                help = "Logical indicating if data is paired-end. Default = TRUE"),
+    make_option(c("-q", "--quality"),
+                type = "integer",
+                default = 3,
+                help = "Minimum MAPQ score"),
+    make_option(c("--threads"), # threads
+                type = "integer",
+                default = detectCores(logical = F),
+                help = "Number of threads to use for parallel processing. The default is the number of physical cores"),
+    make_option(c("--threads-bam-import"), # threads
+                type = "integer",
+                default = 1,
+                help = "Number of threads to use for simultaneously importing bam files. The default is 1."),
+    make_option(c("--yield-size"), # threads
+                type = "integer",
+                default = NA_integer_,
+                help = "The number of BAM records to process at once. Higher is faster, but uses more memory")
+)
+
+opt <- parse_args(OptionParser(option_list = option_list, usage = usage),
+                  convert_hyphens_to_underscores = TRUE)
+
+if (is.na(opt$input_dir)) {
+    print_help(OptionParser(usage = usage, option_list = option_list))
+    quit()
+}
+
+# Check Dependencies ------------------------------------------------------
+
+if (!"BRGenomics" %in% installed.packages()[,1])
+    stop("BRGenomics not found in installed packages")
+
+if (!packageVersion("BRGenomics") >= 0.8)
+    stop("BRGenomics version >0.8 required")
+
+
+# Set Other Global Variables ----------------------------------------------
+
+check.dirname <- function(dirname) {
+    n <- nchar(dirname)
+    if (substr(dirname, n, n) != "/")
+        dirname <- paste0(dirname, "/")
+    dirname
+}
+
+opt$input_dir <- check.dirname(opt$input_dir)
+opt$outdir_raw <- check.dirname(opt$outdir_raw)
+opt$outdir_norm <- check.dirname(opt$outdir_norm)
+opt$outdir_rds <- check.dirname(opt$outdir_rds)
+
+basenames <- grep("\\.bam$", dir(opt$input_dir), value = TRUE)
+infiles <- paste0(opt$input_dir, basenames)
+
+
+# Splash Screen -----------------------------------------------------------
+
+msgout(" ")
+msgout(paste0("[*] processPROseq v1.0 with BRGenomics v", packageVersion("BRGenomics")))
+msgout(" ")
+msgout(" --- Input Files ---  ")
+msgout(" ")
+msgout(paste0("   ", basenames), sep = "\n")
+msgout(" ")
+msgout(" ----- Options -----  ")
+msgout(" ")
+op_names <- sapply(option_list, function(x) x@long_flag)
+msgout(Map(paste0, "   ", op_names, "=", unlist(opt[-length(opt)])),
+       sep = "\n")
+msgout(" ")
+msgout(" -------------------  ")
+msgout(" ")
+
+
+# Load BRGenomics ---------------------------------------------------------
+
+msgout(" - Loading dependencies...")
+suppressPackageStartupMessages(library("BRGenomics"))
+
+
+# Import BAM Files --------------------------------------------------------
+
+msgout(" - Importing BAM files...")
+ps_list <- import_bam_PROseq(infiles, mapq = opt$quality,
+                             paired_end = opt$paired_end,
+                             yieldSize = opt$yield_size,
+                             ncores = opt$threads_bam_import)
+
+names(ps_list) <- sub(".bam", "", sub("./", "", basenames))
+
+
+# Spike-in reads: count, filter, and get NFs ------------------------------
+
+spike <- !is.null(opt$spike_pattern)
+
+if (spike) {
+    msgout(" - Counting and filtering spike-in reads...")
+    counts.df <- getSpikeInCounts(ps_list, si_pattern = opt$spike_pattern,
+                                  ncores = opt$threads)
+
+    NFs <- getSpikeInNFs(ps_list, si_pattern = opt$spike_pattern,
+                         batch_norm = opt$batch_norm,
+                         ctrl_pattern = opt$control_pattern,
+                         ncores = opt$threads)
+
+    ps_list <- removeSpikeInReads(ps_list, si_pattern = opt$spike_pattern,
+                                  ncores = opt$threads)
+}
+
+
+# Export NFs --------------------------------------------------------------
+
+if (spike & !is.null(opt$metadata_output)) {
+    msgout(" - Exporting spike-in readcounts and normalization factors...")
+    counts.df$NF <- round(NFs, 4)
+    suppressWarnings(
+        write.table(counts.df, opt$metadata_output, append = TRUE, quote = FALSE,
+                    sep = "\t", row.names = FALSE, col.names = TRUE)
+    )
+}
+
+
+# Export bigWigs ----------------------------------------------------------
+
+export_fun <- function(x, xname, outdir) {
+    p_fname <- paste0(outdir, xname, "_plus.bw")
+    m_fname <- paste0(outdir, xname, "_minus.bw")
+    p_gr <- x[strand(x) == "+"]
+    m_gr <- x[strand(x) == "-"]
+    score(m_gr) <- -abs(score(m_gr))
+    export.bw(p_gr, p_fname)
+    export.bw(m_gr, m_fname)
+}
+
+## Raw
+if (!is.null(opt$outdir_raw)) {
+    msgout(" - Exporting unnormalized bigWig files...")
+    invisible(mcMap(export_fun, ps_list, names(ps_list), opt$outdir_raw,
+                    mc.cores = opt$threads))
+}
+
+if (spike) {
+    normfun <- function(gr, nf) {
+        score(gr) <- score(gr) * nf
+        gr
+    }
+    ps_norm <- mcMap(normfun, ps_list, NFs, mc.cores = opt$threads)
+
+    ## Normalized
+    if (!is.null(opt$outdir_norm)) {
+        msgout(" - Exporting spike-in normalized bigWig files...")
+        xnames <- paste0(names(ps_norm), "_spikenorm")
+        invisible(mcMap(export_fun, ps_norm, xnames, opt$outdir_norm,
+                        mc.cores = opt$threads))
+    }
+}
+
+
+# Export RDS Files --------------------------------------------------------
+
+if (!is.null(opt$outdir_rds)) {
+    msgout(" - Exporting RDS files...")
+    saveRDS(ps_list, paste0(opt$outdir_rds, "PROseq_raw.rds"))
+    if (spike)
+        saveRDS(ps_norm, paste0(opt$outdir_rds, "PROseq_norm.rds"))
+}
+
+t.diff <- Sys.time() - t.start
+msgout(" ")
+msgout("-> Finished in", round(t.diff, 1), units(t.diff))

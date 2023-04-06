@@ -1,0 +1,4 @@
+Lucif_noFP	0.833
+Lucif_FP 	0.323
+NELF_noFP	0.154
+NELF_FP	0.067

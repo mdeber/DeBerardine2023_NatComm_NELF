@@ -1,0 +1,5905 @@
+---
+title: "figure_generation"
+author: "Mike DeBerardine"
+date: "April 2023 (final submission)"
+output: html_document
+---
+
+This notebook contains the code that generates all figures and supplements for
+the manuscript.
+
+In general, this code avoids saving almost any intermediate calculations or
+objects in R. Whenever a pre-calculated object is used or referenced (typically 
+because it's used multiple times and it's sufficiently complicated/slow to 
+generate), there's a section called *OBJECT* to highlight it.
+
+\ 
+
+# Environment
+
+**Note:** Unlike the other data, the S. pombe PRO-seq is not imported by 
+sourcing `fig_generation_environment.R`, but is only imported if that section of 
+code is run (by default, the code chunks in that section are set to 
+`eval=FALSE`).
+
+```{r}
+suppressPackageStartupMessages(library(here))
+source(here("scripts/fig_generation_environment.R"))
+```
+
+\ 
+
+# Figure 1
+
+\ 
+
+## (A Diagram)
+
+\ 
+
+## B PRO-seq MA plots, pause & gene body regions
+
+\ 
+
+### OBJECT
+
+PRO-seq DESeq2 results for NELF RNAi vs. LacZ RNAi in gene bodies & pause 
+regions, using all normalization strategies (spike-in and DESeq2 default, and
+raw and shrunken LFCs). This object is used for Supplementary Figure 2a as well.
+
+
+```{r}
+# for each region
+list(
+    GB = txs.gb, 
+    PR = txs.5p_pp
+) %>% 
+    
+    lapply(function(x) {
+        
+        sf_spike <- readcounts.b1_alt$NF %>%
+            "/"(., mean(.)) %>%
+            "/"(1, .)
+        
+        dds <- getDESeqDataSet(PROseq.b1, x)
+        
+        # for each normalization style
+        list(dsnorm = NULL, spknorm = sf_spike) %>% 
+            lapply(function(n) {
+                
+                # for each lfc style
+                list(raw = FALSE, shrink = TRUE) %>% 
+                    lapply(function(i) {
+                        getDESeqResults(
+                            dds, 
+                            contrast.numer = "NELFeKD_DMSO",
+                            contrast.denom = "LacZKD_DMSO",
+                            sizeFactors = n,
+                            lfcShrink = i
+                        ) %>% 
+                            as.data.frame %>% 
+                            # when no shrinkage used, get an extra column `stat`
+                            .[colnames(.) != "stat"]
+                    }) %>% 
+                    dfList2df(col_name = "lfc_style")
+                
+            }) %>% 
+            dfList2df(col_name = "norm")
+        
+    }) %>%
+    dfList2df(col_name = "region") %>% 
+    
+    # For spike-norm, fix baseMeans to be in RRPM units
+    #   (Current normalization = counts * NF / mean(NF))
+    # For DESeq2 norm, will approximate those numbers by using average RPM NF
+    mutate(
+        baseMean = ifelse(
+            norm == "spknorm", 
+            baseMean * mean(readcounts.b1_alt$NF),
+            baseMean * mean(getSpikeInNFs(PROseq.b1, method = "RPM"))
+        )
+    ) %>%
+    
+    # final formatting (but no subsetting)
+    mutate(
+        baseMean = log10(baseMean),
+        sig = ifelse(
+            padj > 0.05 | is.na(padj), 
+            "Insignificant",
+            ifelse(log2FoldChange < 0, "Down", "Up")
+        ),
+        sig = factor(sig, levels = c("Up", "Insignificant", "Down"))
+    ) ->
+    dsres_kd_txsgb_txs5ppp_allstyles
+```
+
+\ 
+
+### The plot
+
+```{r}
+# dsres_kd_txsgb_txs5ppp_allstyles %>% 
+#     
+#     subset(norm == "spknorm") %>% 
+#     subset(lfc_style == "shrink") %>% 
+#     subset(is.finite(baseMean) & is.finite(log2FoldChange)) %>% 
+#     
+#     mutate(
+#         region = sapply(
+#             region, 
+#             switch,
+#             GB = "Gene bodies\n(n = 10685)",
+#             PR = "Pause regions\n(n = 3270)"
+#         ),
+#         region = factor(
+#             region, 
+#             levels = c(
+#                 "Pause regions\n(n = 3270)", 
+#                 "Gene bodies\n(n = 10685)"
+#             )
+#         )
+#     ) %>% 
+#     
+#     # plot significant genes on top
+#     .[order(.$padj, decreasing = TRUE, na.last = FALSE), ] %>% 
+# 
+#     ggplot(
+#         aes(baseMean, log2FoldChange, color = sig)
+#     ) +
+#     facet_rep_grid(
+#         ~region
+#     ) +
+#     
+#     geom_point(
+#         shape = 16, 
+#         size = 0.8
+#     ) +
+#     geom_hline(
+#         yintercept = 0, 
+#         linetype = "dashed",
+#         size = 0.25
+#     ) +
+#     
+#     scale_color_manual(
+#         values = rev(change_colors)
+#     ) +
+#     
+#     labs(
+#         x = "Mean PRO-seq (log10 RRPM)", 
+#         y = "PRO-seq log2 (NELF/LacZ)", 
+#         color = NULL
+#     ) +
+#     coord_cartesian(
+#         clip = "off",
+#         ylim = c(-3, 3),
+#         xlim = c(-2, 3)
+#     ) +
+#     theme_md_classic() +
+#     theme(
+#         legend.position = "none"
+#     ) -> fig1b
+# fig1b
+```
+
+For convenience in figure assembly, but I redid this plot in a more complex
+manner, plotting each separately and then aligning using patchwork:
+
+```{r}
+dsres_kd_txsgb_txs5ppp_allstyles %>% 
+    
+    subset(norm == "spknorm") %>% 
+    subset(lfc_style == "shrink") %>% 
+    subset(is.finite(baseMean) & is.finite(log2FoldChange)) %>% 
+    
+    mutate(
+        region = sapply(
+            region, 
+            switch,
+            GB = "Gene bodies\n(n = 10685)",
+            PR = "Pause regions\n(n = 3270)"
+        ),
+        region = factor(
+            region, 
+            levels = c(
+                "Pause regions\n(n = 3270)", 
+                "Gene bodies\n(n = 10685)"
+            )
+        )
+    ) %>% 
+    
+    # print the number of genes in each category
+    (function(x) {
+        aggregate(sig ~ region, x, FUN = table) %>% 
+            print.data.frame
+        x
+    }) %>% 
+    
+    # plot significant genes on top
+    .[order(.$padj, decreasing = TRUE, na.last = FALSE), ] %>% 
+    
+    split(., .$region) %>% 
+    unname %>% 
+    
+    lapply(function(x) {
+        x %>% 
+            ggplot(
+                aes(baseMean, log2FoldChange, color = sig)
+            ) +
+            facet_grid(
+                ~region,
+                drop = TRUE
+            ) +
+            
+            geom_point(
+                shape = 16, 
+                size = 0.8
+            ) +
+            geom_hline(
+                yintercept = 0, 
+                linetype = "dashed",
+                size = 0.25
+            ) +
+            
+            scale_color_manual(
+                values = rev(change_colors)
+            ) +
+            
+            labs(
+                x = "Mean PRO-seq\n(log10 RRPM)", 
+                y = "PRO-seq log2 (NELF/LacZ)", 
+                color = NULL
+            ) +
+            coord_cartesian(
+                clip = "off",
+                ylim = c(-3.3, 3),
+                xlim = c(-2.3, 3.5),
+                expand = FALSE
+            ) +
+            theme_md_classic() +
+            theme(
+                legend.position = "none"
+            )
+    }) %>% 
+    
+    do.call("+", .) -> fig1b
+fig1b
+```
+
+\ 
+
+## C Plot spike-in quantified PRO-seq and RNA-seq
+
+This plot did not meet Nature Communication's standards for low 'n' plots:
+
+```{r}
+# list(
+#     subset(readcounts.b1_alt, grepl("DMSO", sample)),
+#     readcounts_RNAseq.b1
+# ) %>% 
+#     setNames(c(
+#         "PRO-seq", 
+#         "mRNA-seq"
+#     )) %>% 
+#     lapply(
+#         mutate, 
+#         norm_counts = exp_reads * NF
+#     ) %>% 
+#     lapply(function(x) {
+#         split(x, sub(".*_rep", "rep", x$sample)) %>% 
+#             lapply(
+#                 . %>% .$norm_counts %>% rev %>% as.list %>% do.call("/", .)
+#             ) %>% 
+#             unlist
+#     }) %>% 
+#     Map(function(x, nm) {
+#         data.frame(
+#             assay = nm,
+#             mean = mean(x),
+#             se = sd(x) / sqrt(2)
+#         )
+#     }, ., nm = names(.)) %>%  
+#     c(make.row.names = FALSE) %>% 
+#     do.call(rbind, .) %>% 
+# 
+#     # print numbers & pipe on to plot
+#     (function(x) {
+#         print(x)
+#         x
+#     }) %>% 
+#     
+#     mutate(
+#         assay = factor(
+#             assay, 
+#             levels = c("PRO-seq", "mRNA-seq")
+#         )
+#     ) %>% 
+#     
+#     ggplot(
+#         aes(assay)
+#     ) +
+#     geom_col(
+#         aes(y = mean),
+#         color = "black",
+#         fill = "gray85",
+#         size = 0.25
+#     ) +
+#     geom_errorbar(
+#         aes(ymin = mean - se, ymax = mean + se),
+#         width = 0.2, 
+#         size = 0.25
+#     ) +
+#     scale_y_continuous(
+#         expand = c(0,0),
+#         labels = . %>% scales::percent(accuracy = 1)
+#     ) +
+#     coord_cartesian(
+#         clip = "off",
+#         ylim = c(0, 1)
+#     ) +
+#     labs(
+#         x = NULL, 
+#         y = "NELF vs. LacZ RNAi"
+#     ) +
+#     theme_md_classic() +
+#     theme(
+#         axis.ticks.x = element_blank(),
+#         axis.line.x = element_blank(),
+#         axis.text.x = element_text(
+#             size = 10,
+#             angle = 30, 
+#             hjust = 1, 
+#             vjust = 1
+#         )
+#     ) -> fig1c
+# fig1c
+```
+So remade it:
+
+Note that this plot is slightly cutoff, but all the information is present in 
+the pdf (and will all be visible in the assembled figure in Adobe Illustrator).
+
+```{r}
+list(
+    subset(readcounts.b1_alt, grepl("DMSO", sample)),
+    readcounts_RNAseq.b1
+) %>% 
+    setNames(c(
+        "PRO-seq", 
+        "mRNA-seq"
+    )) %>% 
+    lapply(
+        mutate, 
+        norm_counts = exp_reads * NF
+    ) %>% 
+    lapply(function(x) {
+        split(x, sub(".*_rep", "rep", x$sample)) %>% 
+            lapply(
+                . %>% .$norm_counts %>% rev %>% as.list %>% do.call("/", .)
+            ) %>% 
+            unlist
+    }) %>% 
+    lapply(function(x) {
+        data.frame(
+            rep = names(x),
+            ratio = unname(x)
+        )
+    }) %>% 
+    dfList2df(
+        col_name = "assay"
+    ) %>% 
+    
+    mutate(
+        assay = factor(
+            assay, 
+            levels = c("PRO-seq", "mRNA-seq")
+        )
+    ) %>% 
+    
+    ggplot() +
+
+    stat_summary(
+        mapping = aes(assay, ratio),
+        fun = mean,
+        geom = "col",
+        color = "black",
+        size = 0.25,
+        fill = "gray85",
+        alpha = 0.8
+    ) +
+    
+    geom_point(
+        mapping = aes(assay, ratio, color = rep),
+        position = position_dodge(width = 0.5),
+        shape = 16
+    ) +
+    
+    scale_color_manual(
+        values = c("gray25", "gray75")
+    ) +
+    
+    stat_summary(
+        mapping = aes(assay, ratio),
+        fun = mean,
+        geom = "linerange",
+        fun.max = function(x) mean(x) + sd(x) / sqrt(length(x)),
+        fun.min = function(x) mean(x) - sd(x) / sqrt(length(x))
+    ) +
+    
+    scale_y_continuous(
+        expand = c(0,0),
+        labels = . %>% scales::percent(accuracy = 1)
+    ) +
+    coord_cartesian(
+        clip = "off",
+        ylim = c(0, 1)
+    ) +
+    labs(
+        x = NULL, 
+        y = "NELF vs. LacZ RNAi",
+        color = NULL
+    ) +
+    theme_md_classic() +
+    theme(
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.x = element_text(
+            size = 10,
+            angle = 30, 
+            hjust = 1, 
+            vjust = 1
+        )
+    ) -> fig1c
+fig1c
+```
+
+\ 
+
+## D RNA-seq MA plot
+
+```{r}
+readcounts_RNAseq.b1$NF %>% 
+    "/"(., mean(.)) %>% 
+    "/"(1, .) %>% 
+    getDESeqDataSet(
+        lapply(RNAseq.b1, resize, 25, fix = "end"), 
+        txs.cps, 
+        gene_names = txs.cps$gene_id,
+        sizeFactors = .
+    ) %>% 
+    getDESeqResults(
+        contrast.numer = "NELFeKD_DMSO",
+        contrast.denom = "LacZKD_DMSO",
+        lfcShrink = FALSE
+    ) %>% 
+    as.data.frame %>% 
+    
+    # Return to RRPM units
+    # currently counts * (NF/mean(NF)); want counts * NF
+    mutate(
+        baseMean = baseMean * mean(readcounts_RNAseq.b1$NF)
+    ) %>% 
+    
+    mutate(
+        baseMean = log10(baseMean)
+    ) %>%
+    subset(is.finite(baseMean) & is.finite(log2FoldChange)) %>%
+    mutate(
+        sig = ifelse(
+            padj > 0.05 | is.na(padj), "Insignificant",
+            ifelse(log2FoldChange < 0, "Down", "Up")
+        ),
+        sig = factor(
+            sig, 
+            levels = c("Up", "Insignificant", "Down")
+        )
+    ) %>%
+    
+    # print out the number of sig genes
+    (function(x) {
+        print(table(x$sig))
+        x
+    }) %>% 
+    
+    # get sig colors on top
+    .[order(factor(.$sig, levels = c("Insignificant", "Down", "Up"))), ] %>% 
+    
+    ggplot(
+        aes(baseMean, log2FoldChange, color = sig)
+    ) +
+
+    geom_point(
+        shape = 16
+    ) +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    
+    scale_color_manual(
+        values = rev(change_colors)
+    ) +
+    
+    coord_cartesian(
+        ylim = c(-6, 6),
+        clip = "off"
+    ) +
+    
+    labs(
+        x = "Mean 3' RNA-seq\n(log10 RRPM)", 
+        y = "RNA-seq log2(NELF/LacZ)", 
+        color = NULL,
+        title = "\n3' RNA-seq DESeq2"
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none"
+    ) -> fig1d
+fig1d
+```
+
+\ 
+
+## E LFC PRO-seq vs. RNA-seq
+
+\ 
+
+### OBJECT
+
+A little complicated (code never refactored), but returns a dataframe with genes
+and the DESeq2 results for NELF vs. LacZ RNAi for both PRO-seq and RNA-seq,
+with significance for each assay annotated.
+
+```{r}
+readcounts_RNAseq.b1$NF %>%
+    "/"(., mean(.)) %>%
+    "/"(1, .) %>%
+    getDESeqDataSet(
+        lapply(RNAseq.b1, resize, 25, fix = "end"),
+        txs.cps, 
+        gene_names = txs.cps$gene_id,
+        sizeFactors = .
+    ) %>% 
+    getDESeqResults(
+        contrast.numer = "NELFeKD_DMSO",
+        contrast.denom = "LacZKD_DMSO",
+        lfcShrink = TRUE
+    ) %>% 
+
+    (function(x) {
+        x[order(rownames(x)), c("baseMean", "log2FoldChange", "padj")]
+    }) %>%
+    as.data.frame %>% 
+    (function(x) {
+        mutate(
+            x,
+            gene = rownames(x)
+        )
+    }) %>% 
+    
+    dplyr::select(gene, baseMean, log2FoldChange, padj) %>%
+    setNames(c("gene", "base_rna", "lfc_rna", "pval_rna")) %>%
+
+    # Get PRO-seq DESeq2 results, and combine with RNA-seq results
+    (function(rs) {
+        readcounts.b1_alt$NF %>%
+            "/"(., mean(.)) %>%
+            "/"(1, .) %>%
+            getDESeqDataSet(
+                PROseq.b1, 
+                txs.gb_match_cps,
+                gene_names = txs.gb_match_cps$gene_id,
+                sizeFactors = .
+            ) %>%
+            getDESeqResults(
+                contrast.numer = "NELFeKD_DMSO",
+                contrast.denom = "LacZKD_DMSO",
+                lfcShrink = TRUE
+            ) %>% 
+
+            (function(x) {
+                x[order(rownames(x)), c("baseMean", "log2FoldChange", "padj")]
+            }) %>%
+            as.data.frame %>% 
+            (function(x) {
+                mutate(
+                    x,
+                    gene = rownames(x)
+                )
+            }) %>% 
+            dplyr::select(gene, baseMean, log2FoldChange, padj) %>%
+            setNames(c("gene", "base_pro", "lfc_pro", "pval_pro")) %>%
+
+            # combine with RNA-seq
+            left_join(rs, by = "gene")
+    }) %>%
+
+    # add significance
+    mutate(
+        sig_pro = ifelse(
+            pval_pro >= 0.05 | is.na(pval_pro),
+            "Insignificant",
+            ifelse(lfc_pro > 0, "Up", "Down")
+        ),
+        sig_rna = ifelse(
+            pval_rna >= 0.05 | is.na(pval_rna),
+            "Insignificant",
+            ifelse(lfc_rna > 0, "Up", "Down")
+        )
+    ) %>%
+    (function(x) {
+        pro <- !x$sig_pro == "Insignificant"
+        rna <- !x$sig_rna == "Insignificant"
+        x$sig <- "None"
+        x$sig[pro] <- "PROseq"
+        x$sig[rna] <- "RNAseq"
+        x$sig[pro & rna] <- "Both"
+        x
+    }) -> sig_genes_pro_rna
+```
+
+\ 
+
+### The plot
+
+```{r}
+sig_genes_pro_rna %>% 
+    subset(
+        sig_pro != "Insignificant" | sig_rna != "Insignificant"
+    ) %>% # n=1925
+    subset(
+        !is.na(lfc_pro) & !is.na(lfc_rna)
+    ) %>% # n=1904
+
+    # color by significance between the two assays
+    mutate(
+        sig = ifelse(
+            sig_pro == "Insignificant",
+            "RNA-seq",
+            ifelse(
+                sig_rna == "Insignificant",
+                "PRO-seq",
+                "Both"
+            )
+        ),
+        sig = factor(
+            sig, levels = c("RNA-seq", "PRO-seq", "Both"))
+    ) %>% 
+    
+    mutate(
+        fname = "Shrunken log2(NELF/LacZ)"
+    ) %>% 
+    
+    ggplot(
+        aes(lfc_pro, lfc_rna, color = sig)
+    ) +
+    facet_grid(~fname) +
+    
+    geom_hline(
+        yintercept = 0, 
+        color = "darkgray",
+        size = 0.25
+    ) +
+    geom_vline(
+        xintercept = 0, 
+        color = "darkgray",
+        size = 0.25
+    ) +
+    geom_point(
+        shape = 16, 
+        alpha = 0.6
+    ) +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    
+    # (hand-picking some viridis discrete color values)
+    # "#440154FF" "#482878FF" "#3E4A89FF" "#31688EFF" "#26828EFF" 
+    # "#1F9E89FF" "#35B779FF" "#6DCD59FF" "#B4DE2CFF" "#FDE725FF"
+    
+    scale_color_manual(
+        values = c(
+            "#440154FF",
+            "#1F9E89FF",
+            "#B4DE2CFF"
+        )
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    
+    labs(
+        x = "Gene body PRO-seq", 
+        y = "3' RNA-seq",
+        color = "Significance"
+    ) +
+    theme_md_classic() +
+    theme(
+        # aspect.ratio = 1, # (at least to match counts vs. counts plot)
+    ) -> fig1e
+fig1e
+```
+
+\ 
+
+## Assemble
+
+```{r}
+fig1c + fig1d + fig1e + 
+    plot_layout(
+        widths = c(1, 3, 3)
+    )
+```
+
+\ 
+
+# Supplementary Figure 1
+
+\ 
+
+## A (Western)
+
+\ 
+
+## B mRNA KD efficiency
+
+```{r}
+txs.cps %>% 
+    subset(symbol == "Nelf-E") %>% 
+    getCountsByRegions(
+        RNAseq.b1, 
+        ., 
+        NF = readcounts_RNAseq.b1$NF, 
+        melt = TRUE, 
+        region_names = .$symbol
+    ) %>% 
+    
+    mutate(
+        rep = sub(".*rep", "rep", sample),
+        KD = sub("KD.*", "", sample),
+        KD = sub("NELFe", "NELF", KD),
+        KD = factor(
+            KD, levels = c("LacZ", "NELF")
+        )
+    ) %>% 
+    .[order(.$KD), ] %>% 
+    
+    split(., list(region = .$region, rep = .$rep)) %>% 
+    lapply(mutate, ratio = signal / signal[1]) %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    subset(KD == "NELF") %>% 
+    
+    # print numbers & pipe on to plot
+    (function(x) {
+        print(x)
+        x
+    }) %>% 
+    
+
+    ggplot(
+        aes(rep, ratio, fill = rep)
+    ) +
+    geom_col() +
+
+    scale_fill_manual(
+        values = c("gray25", "gray75")
+    ) +
+    scale_y_continuous(
+        limits = c(0, 1), 
+        expand = c(0,0),
+        labels = . %>% scales::percent(accuracy = 1)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = NULL, 
+        y = "NELF-e mRNA\nremaining"
+    ) +
+    theme_md_classic() +
+    theme(
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.text.x = element_text(
+            angle = 30, 
+            hjust = 1, 
+            vjust = 1
+        ),
+        legend.position = "none"
+    ) -> S1B
+S1B
+```
+
+\ 
+
+## C PRO-seq Rep. Corr.
+
+\ 
+
+### Left: gene bodies
+
+```{r}
+getCountsByRegions(
+    PROseq.b1, 
+    txs.gb, 
+    NF = readcounts.b1_alt$NF
+) %>%
+    lapply(log10) %>%
+    split(., sub("_rep.", "", names(.))) %>%
+    lapply(as.data.frame) %>%
+    lapply(setNames, c("rep1", "rep2")) %>%
+    dfList2df %>%
+    
+    mutate(
+        KD = sapply(
+            sub("KD_(DMSO|FP)", "", sample), 
+            switch,
+            LacZ = "LacZ RNAi", 
+            NELFe = "NELF RNAi" 
+        ),
+        KD = factor(
+            KD, 
+            levels = c("LacZ RNAi", "NELF RNAi")
+        ),
+        drug = as.factor(
+            sub(".*(DMSO|FP).*", "\\1", sample)
+        )
+    ) %>%
+    
+    subset(is.finite(rep1) & is.finite(rep2)) %>%
+    
+    ggplot(
+        aes(rep1, rep2)
+    ) +
+    facet_grid(
+        drug~KD
+    ) +
+    geom_hex() +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed"
+    ) +
+    stat_cor(
+        aes(label = ..r.label..), 
+        method = "spearman", 
+        cor.coef.name = "rho", 
+        r.digits = 2
+    ) +
+    
+    scale_fill_viridis(
+        guide = guide_colorbar(
+            ticks.linewidth = 1.5,
+            barwidth = 0.75,
+            ticks.colour = "white",
+            draw.ulim = FALSE, 
+            draw.llim = FALSE
+        ),
+        trans = "log10",
+        labels = . %>% scales::comma(accuracy = 1),
+        limits = c(1, 1e3), expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = "rep 1\n(log10 RRPM)", 
+        y = "rep 2\n(log10 RRPM)",
+        title = "Gene bodies (n = 12929)",
+        fill = "genes"
+    ) +
+    theme_md_bw() +
+    theme(
+        aspect.ratio = 1,
+        strip.text.y = element_text(hjust = 0)
+    ) -> S1C_left
+S1C_left
+```
+
+\ 
+
+### Right: pause Regions:
+
+```{r}
+getCountsByRegions(
+    PROseq.b1, 
+    txs.5p_pp, 
+    NF = readcounts.b1_alt$NF
+) %>%
+    lapply(log10) %>%
+    split(., sub("_rep.", "", names(.))) %>%
+    lapply(as.data.frame) %>%
+    lapply(setNames, c("rep1", "rep2")) %>%
+    dfList2df %>%
+    
+    mutate(
+        KD = sapply(
+            sub("KD_(DMSO|FP)", "", sample), 
+            switch,
+            LacZ = "LacZ RNAi", 
+            NELFe = "NELF RNAi" 
+        ),
+        KD = factor(
+            KD, 
+            levels = c("LacZ RNAi", "NELF RNAi")
+        ),
+        drug = as.factor(
+            sub(".*(DMSO|FP).*", "\\1", sample)
+        )
+    ) %>%
+    
+    subset(is.finite(rep1) & is.finite(rep2)) %>%
+    
+    ggplot(
+        aes(rep1, rep2)
+    ) +
+    facet_grid(
+        drug~KD
+    ) +
+    geom_hex() +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed"
+    ) +
+    stat_cor(
+        aes(label = ..r.label..), 
+        method = "spearman", 
+        cor.coef.name = "rho", 
+        r.digits = 2
+    ) +
+    
+    scale_fill_viridis(
+        guide = guide_colorbar(
+            ticks.linewidth = 1.5, 
+            barwidth = 0.75,
+            ticks.colour = "white",
+            draw.ulim = FALSE, 
+            draw.llim = FALSE
+        ),
+        trans = "log10",
+        labels = . %>% scales::comma(accuracy = 1),
+        limits = c(1, 1e3), expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = "rep 1\n(log10 RRPM)", 
+        y = "rep 2\n(log10 RRPM)",
+        title = "Pause regions (n = 3280)",
+        fill = "genes"
+    ) +
+    theme_md_bw() +
+    theme(
+        aspect.ratio = 1,
+        strip.text.y = element_text(hjust = 0)
+    ) -> S1C_right
+S1C_right
+```
+
+\ 
+
+### Assemble
+
+```{r}
+S1C_left + S1C_right +
+    plot_layout(
+        guides = "collect"
+    )
+```
+
+\ 
+
+## D RNA-seq replicate correlations
+
+\ 
+
+```{r}
+getCountsByRegions(
+    RNAseq.b1, 
+    txs.cps, 
+    NF = readcounts_RNAseq.b1$NF
+) %>%
+    lapply(log10) %>% 
+    split(., sub("_rep.", "", names(.))) %>%
+    lapply(as.data.frame) %>%
+    lapply(setNames, c("rep1", "rep2")) %>%
+    dfList2df %>%
+    mutate(
+        KD = sub("KD.*", "", sample),
+        KD = sub("NELFe", "NELF", KD),
+        KD = factor(
+            paste(KD, "RNAi"), 
+            levels = c("LacZ RNAi", "NELF RNAi")
+        )
+    ) %>% 
+    subset(is.finite(rep1) & is.finite(rep2)) %>% 
+    
+    ggplot(
+        aes(rep1, rep2)
+    ) +
+    facet_grid(~KD) +
+    geom_hex() +
+    
+    scale_fill_viridis(
+        guide = guide_colorbar(
+            ticks.linewidth = 1.5,
+            ticks.colour = "white",
+            barwidth = 1,
+            draw.ulim = FALSE, 
+            draw.llim = FALSE
+        ),
+        trans = "log10",
+        labels = . %>% scales::comma(accuracy = 1),
+        limits = c(1, 1e3), 
+        expand = c(0, 0)
+    ) +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    stat_cor(
+        aes(label = ..r.label..), 
+        method = "spearman", 
+        cor.coef.name = "rho", 
+        r.digits = 2
+    ) +
+    labs(
+        x = "Rep 1 (log10 RRPM)", 
+        y = "Rep 2 (log10 RRPM)",
+        title = "\n3' RNA-seq Replicate Correlations",
+        fill = "genes"
+    ) +
+    theme_md_bw() +
+    theme(
+        aspect.ratio = 1
+    ) -> S1D
+S1D
+```
+
+\ 
+
+## E Total PRO-seq, spike-in-only normalized
+
+```{r}
+readcounts.b1 %>% 
+    mutate(
+        norm_counts = exp_reads * NF
+    ) %>%
+    split(., sub(".*_rep", "rep", .$sample)) %>%
+    lapply(
+        transmute, 
+        sample = sample, 
+        ratio = norm_counts / norm_counts[1]
+    ) %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    mutate(
+        drug = sub(".*(DMSO|FP).*", "\\1", sample),
+        rep = sub(".*rep", "rep", sample),
+        KD = sapply(
+            sub("_(DMSO|FP).*", "", sample), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            paste0(KD, "\nRNAi"), 
+            levels = c("LacZ\nRNAi", "NELF\nRNAi")
+        )
+    ) %>% 
+    
+    ggplot(
+        aes(drug, ratio, fill = rep)
+    ) + 
+    facet_grid(
+        ~KD,
+        switch = "x"
+    ) +
+    geom_bar(
+        stat = "identity", 
+        position = "dodge"
+    ) +
+    
+    scale_fill_manual(
+        values = c("gray25", "gray75")
+    ) +
+    coord_cartesian(
+        ylim = c(0, 1), 
+        clip = "off"
+    ) +
+    scale_y_continuous(
+        expand = c(0,0),
+        labels = . %>% scales::percent(accuracy = 1)
+    ) +
+    
+    labs(
+        x = NULL, 
+        y = "Total PRO-seq\nvs. control", 
+        fill = NULL,
+        title = "Relative PRO-seq,\nSpike-in quantified"
+    ) +
+    theme_md_classic() +
+    theme(
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 30, hjust = 1),
+        axis.line.x = element_blank(),
+        strip.placement = "outside"
+    ) -> S1E
+S1E
+```
+
+
+\ 
+
+## F Total PRO-seq, spike-in+LGE normalized
+
+```{r}
+readcounts.b1_alt %>% 
+    mutate(
+        norm_counts = exp_reads * NF
+    ) %>%
+    split(., sub(".*_rep", "rep", .$sample)) %>%
+    lapply(
+        transmute, 
+        sample = sample, 
+        ratio = norm_counts / norm_counts[1]
+    ) %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    mutate(
+        drug = sub(".*(DMSO|FP).*", "\\1", sample),
+        rep = sub(".*rep", "rep", sample),
+        KD = sapply(
+            sub("_(DMSO|FP).*", "", sample), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            paste0(KD, "\nRNAi"), 
+            levels = c("LacZ\nRNAi", "NELF\nRNAi")
+        )
+    ) %>% 
+    
+    ggplot(
+        aes(drug, ratio, fill = rep)
+    ) + 
+    facet_grid(
+        ~KD,
+        switch = "x"
+    ) +
+    geom_bar(
+        stat = "identity", 
+        position = "dodge"
+    ) +
+    
+    scale_fill_manual(
+        values = c("gray25", "gray75")
+    ) +
+    coord_cartesian(
+        ylim = c(0, 1), 
+        clip = "off"
+    ) +
+    scale_y_continuous(
+        expand = c(0,0),
+        labels = . %>% scales::percent(accuracy = 1)
+    ) +
+    
+    labs(
+        x = NULL, 
+        y = "Total PRO-seq\nvs. control", 
+        fill = NULL,
+        title = "Relative PRO-seq,\nSpike-in + LGE quant."
+    ) +
+    theme_md_classic() +
+    theme(
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 30, hjust = 1),
+        axis.line.x = element_blank(),
+        strip.placement = "outside"
+    ) -> S1F
+S1F
+```
+
+\ 
+
+# Supplementary Figure 2
+
+\ 
+
+
+## A MA plots, gb&pr, all norms/shrinkage
+
+\ 
+
+### OBJECT 
+
+The DESeq2 results object for this plot is made in Figure1b.
+
+\ 
+
+### The MA plot 
+
+For NELF vs. LacZ, PR & GB, plot: 
+- DESeq2 normalization
+- spike-in normalization 
+- spike-in normalization w/ shrunken log-fold-changes
+
+```{r}
+dsres_kd_txsgb_txs5ppp_allstyles %>% 
+    
+    subset(is.finite(baseMean) & is.finite(log2FoldChange)) %>% 
+    
+    mutate(
+        method = paste0(norm, "_", lfc_style)
+    ) %>% 
+    subset(
+        method %in% c("dsnorm_raw", "spknorm_raw", "spknorm_shrink")
+    ) %>% 
+    mutate(
+        method = sapply(
+            method, 
+            switch,
+            dsnorm_raw = "DESeq2\nnormalization",
+            spknorm_raw = "Spike-in\nnormalization",
+            spknorm_shrink = "Spike-in norm.\n+ LFC shrinkage"
+        ),
+        region = sapply(
+            region, switch,
+            GB = "Gene bodies\n(n = 10685)",
+            PR = "Pause regions\n(n = 3270)"
+        ),
+        region = factor(
+            region, 
+            levels = c(
+                "Pause regions\n(n = 3270)", 
+                "Gene bodies\n(n = 10685)"
+            )
+        )
+    ) %>% 
+    
+    # plot significant genes on top
+    .[order(.$padj, decreasing = TRUE, na.last = FALSE), ] %>% 
+
+    ggplot(
+        aes(baseMean, log2FoldChange, color = sig)
+    ) +
+    facet_grid(
+        method~region, 
+        drop = TRUE
+    ) +
+    
+    geom_point(
+        shape = 16, 
+        size = 0.8
+    ) +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    
+    scale_color_manual(
+        values = rev(change_colors)
+    ) +
+    
+    labs(
+        x = "Mean PRO-seq (log10 RRPM)", 
+        y = "PRO-seq log2 (NELF/LacZ)", 
+        color = NULL
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    theme_md_bw() +
+    theme(
+        strip.text.y = element_text(angle = 0, hjust = 0),
+        panel.grid = element_blank(),
+        legend.position = "none"
+    ) -> S2A
+S2A
+```
+
+Print numbers:
+
+```{r}
+dsres_kd_txsgb_txs5ppp_allstyles %>% 
+    subset(!(norm == "dsnorm" & lfc_style == "shrink")) %>% 
+    
+    subset(is.finite(baseMean) & is.finite(log2FoldChange)) %>% 
+    
+    mutate(
+        method = paste0(norm, "_", lfc_style)
+    ) %>% 
+    
+    subset(
+        method %in% c("dsnorm_raw", "spknorm_raw")
+    ) %>% 
+    mutate(
+        method = sapply(
+            method, switch,
+            dsnorm_raw = "DESeq2\nNormalization",
+            spknorm_raw = "Spike-In\nNormalization"
+        ),
+        region = sapply(
+            region, switch,
+            GB = "Gene Bodies",
+            PR = "Pause Regions"
+        ),
+        region = factor(region, levels = c("Pause Regions", "Gene Bodies"))
+    ) %>% 
+    
+    aggregate(
+        sig ~ method*region,
+        .,
+        FUN = table
+    ) %>% 
+    .[order(.$method), ] %>% 
+    print.data.frame
+```
+
+
+\ 
+
+## B Boxplot LFC raw & shrunken
+
+```{r}
+dsres_kd_txsgb_txs5ppp_allstyles %>% 
+    
+    subset(norm == "spknorm") %>% 
+    
+    mutate(
+        lfc_style = ifelse(
+            lfc_style == "raw", 
+            "Raw", 
+            "Shrunken"
+        ),
+        region = ifelse(
+            region == "GB", 
+            "Gene bodies", 
+            "Pause regions"
+        )
+    ) %>% 
+    
+    ggplot(
+        aes(region, log2FoldChange, color = lfc_style)
+    ) +
+
+    geom_hline(
+        yintercept = 0, 
+        size = 0.25
+    ) +
+    
+    geom_boxplot(
+        width = 1, 
+        size = 0.25, 
+        outlier.shape = 16, 
+        outlier.size = 0.4,
+        outlier.alpha = 0.4
+    ) +
+    
+    scale_color_viridis_d(
+        begin = 0.1, 
+        end = 0.7
+    ) +
+    scale_y_continuous(
+        breaks = seq(-6, 6, 2),
+        limits = c(-6, 6),
+        expand = c(0,0)
+    ) +
+    
+    labs(
+        x = NULL, 
+        color = "DESeq2 log2FC",
+        y = "PRO-seq log2 (NELF/LacZ)"
+    ) +
+    theme_md_classic() +
+    theme(
+        axis.text.x = element_text(angle = 30, hjust = 1),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank()
+    ) -> S2B
+S2B
+```
+\ 
+
+## C Hexbin LFC PR vs. GB
+
+\ 
+
+### OBJECT
+
+The DESeq2 results object for matched pause and gene body regions, NELF vs. 
+LacZ RNAi (DMSO):
+
+```{r}
+list(
+    GB = txs.f_gb,
+    PR = txs.f_pp_match_gb
+) %>% 
+    lapply(function(genelist) {
+         sf_spike <- readcounts.b1_alt$NF %>%
+            "/"(., mean(.)) %>%
+            "/"(1, .)
+        
+        getDESeqDataSet(
+            PROseq.b1, 
+            genelist,
+            gene_names = genelist$gene_id,
+            sizeFactors = sf_spike
+        ) %>% 
+            getDESeqResults(
+                contrast.numer = "NELFeKD_DMSO",
+                contrast.denom = "LacZKD_DMSO",
+                lfcShrink = TRUE
+            )
+    }) -> dsres_nelf_txsfgb_txsfppmatch_shrunk
+```
+
+\ 
+
+### The hexbin plot
+
+```{r}
+dsres_nelf_txsfgb_txsfppmatch_shrunk %>% 
+    
+    (function(x) {
+        stopifnot(
+            lapply(x, rownames) %>% unname %>% do.call(identical, .)
+        )
+        x
+    }) %>% 
+    
+    lapply("[[", "log2FoldChange") %>% 
+    lapply(unname) %>% 
+    as.data.frame %>% 
+
+    ggplot(aes(GB, PR)) +
+    
+    geom_hline(
+        yintercept = 0, 
+        color = "darkgray",
+        size = 0.25
+    ) +
+    geom_vline(
+        xintercept = 0, 
+        color = "darkgray",
+        size = 0.25
+    ) +
+    geom_hex(
+        binwidth = 0.1
+    ) +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    
+    stat_cor(
+        aes(label = ..r.label..),
+        method = "spearman",
+        cor.coef.name = "rho",
+        r.digits = 2,
+        label.x = -3.1,
+        label.y = 2.8
+    ) +
+    
+    scale_fill_viridis(
+        guide = guide_colorbar(
+            ticks.colour = "white", 
+            ticks.linewidth = 1.5,
+            barwidth = 0.75,
+            draw.ulim = FALSE,
+            draw.llim = FALSE
+        ),
+        trans = "log2"
+    ) +
+    
+    scale_x_continuous(
+        breaks = seq(-3, 3)
+    ) +
+    scale_y_continuous(
+        breaks = seq(-3, 3)
+    ) +
+    coord_cartesian(
+        xlim = c(-3, 3),
+        ylim = c(-3, 3),
+        clip = "off"
+    ) +
+    
+    labs(
+        color = NULL, 
+        fill = "genes",
+        x = "Gene body", 
+        y = "Pause region",
+        title = "log2 (NELF/LacZ)"
+    ) +
+    theme_md_bw() +
+    theme(
+        aspect.ratio = 1
+    ) -> S2C
+S2C
+```
+
+\ 
+
+## D PRO-seq vs. RNA-seq counts/correlation
+
+3' RNA-seq counts vs. RRPM per kb for PRO-seq gene body
+
+```{r}
+# get RNA-seq counts by gene
+getCountsByRegions(
+    lapply(RNAseq.b1, resize, 25, fix = "end"),
+    txs.cps, 
+    NF = readcounts_RNAseq.b1$NF
+) %>% 
+    as.list %>% 
+    split(., sub("_rep.", "", names(.))) %>% 
+    
+    # average replicates
+    lapply(
+        . %>% do.call("+", .) %>% "/"(2)
+    ) %>% 
+    as.data.frame %>% 
+    
+    # combine by gene_id (first step to match txs.gb_match_cps)
+    aggregate(
+        by = list(gene = txs.cps$gene_id), 
+        FUN = sum
+    ) %>% 
+    
+    melt(
+        id.vars = "gene", 
+        variable.name = "KD", 
+        value.name = "RNAseq"
+    ) %>% 
+    mutate(
+        KD = sub("KD_DMSO", "", KD),
+        KD = sub("NELFe", "NELF", KD),
+        KD = paste(KD, "RNAi")
+    ) ->
+    rnaseq_countsByGene
+
+# get matching PRO-seq counts by gene
+(grepl("DMSO", names(PROseq.b1))) %>% 
+    (function(idx) {
+        getCountsByRegions(
+            PROseq.b1[idx], 
+            txs.gb_match_cps, 
+            NF = readcounts.b1_alt$NF[idx]
+        )
+    }) %>% 
+    as.list %>% 
+    
+    # length-normalize (RRPM per kb)
+    lapply(
+        . %>% "/"(width(txs.gb_match_cps)) %>% "*"(1e3)
+    ) %>% 
+    
+    setNames(., sub("_DMSO", "", names(.))) %>% 
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(. %>% do.call("+", .) %>% "/"(2)) %>% 
+    setNames(., sapply(
+        names(.), 
+        switch, 
+        LacZKD = "LacZ",
+        NELFeKD = "NELF"
+    )) %>% 
+    as.data.frame %>% 
+    
+    # to be sure it matches the RNA-seq, treat the same
+    aggregate(
+        by = list(gene = txs.gb_match_cps$gene_id), 
+        FUN = sum
+    ) %>% 
+    
+    melt(
+        id.vars = "gene", 
+        variable.name = "KD", 
+        value.name = "PROseq"
+    ) %>% 
+    
+    mutate(
+        KD = paste(KD, "RNAi")
+    ) %>% 
+    
+    # combine with RNA-seq
+    left_join(rnaseq_countsByGene, by = c("gene", "KD")) -> 
+    proseq_rnaseq_countsByGene
+    
+
+proseq_rnaseq_countsByGene %>% 
+    
+    ggplot(
+        aes(log10(PROseq), log10(RNAseq))
+    ) +
+    facet_grid(~KD) +
+        
+    geom_hex() +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    stat_cor(
+        aes(label = ..r.label..), 
+        method = "spearman", 
+        cor.coef.name = "rho", 
+        r.digits = 2
+    ) +
+    
+    scale_fill_viridis(
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            draw.ulim = FALSE,
+            draw.llim = FALSE,
+            barwidth = 1
+        ),
+        trans = "log2"
+    ) +
+    
+    labs(
+        x = "Gene body PRO-seq\nlog10 RRPM per kb", 
+        y = "3' RNA-seq\nlog10 RRPM", 
+        fill = "genes"
+    ) +
+    theme_md_bw() +
+    theme(
+        axis.text = element_text(color = "black", size = 8),
+        axis.title = element_text(size = 10),
+        strip.text = element_text(size = 10),
+        axis.ticks = element_line(color = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 10),
+        aspect.ratio = 1,
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black"),
+        strip.background = element_blank()
+    ) -> S2D
+S2D
+```
+
+# Figure 2
+
+\ 
+
+## A Pause region metagene profile
+
+```{r}
+getCountsByPositions(
+    PROseq.b1, 
+    promoters(txs.5p_pp, 0, 101),
+    NF = readcounts.b1_alt$NF
+) %>% 
+    # average replicates
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(function(x) (x[[1]] + x[[2]]) / 2) %>% 
+    
+    # put into units RRPM/kb
+    lapply("*", 1e3) %>% 
+    
+    mcMap(
+        function(x, nm) metaSubsampleMatrix(x, sample.name = nm), 
+        ., 
+        names(.)
+    ) %>% 
+    do.call(rbind, .) %>% 
+    mutate(
+        drug = sub(".*_(DMSO|FP)", "\\1", sample.name),
+        KD = sapply(
+            sub("_(DMSO|FP)", "", sample.name), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ), 
+        KD = factor(
+            paste(KD, "RNAi"),
+            levels = c("LacZ RNAi", "NELF RNAi")
+        )
+    ) %>% 
+    
+    ggplot(aes(x-1, mean)) +
+    
+    # geom_ribbon(
+    #     aes(ymin = lower, ymax = upper, fill = KD, linetype = drug),
+    #     color = NA, alpha = 0.1
+    # ) +
+    geom_line(
+        aes(color = KD, linetype = drug), 
+        alpha = 0.7
+    ) +
+    
+    scale_color_manual(values = KD_colors) +
+
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 2e3), 
+        clip = "off"
+    ) +
+    labs(
+        x = "Distance from TSS (bp)", 
+        y = "\nPRO-seq\n(RRPM per kb)",
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none"
+    ) -> fig2a
+fig2a
+```
+
+\ 
+
+## B Gene body metagene proofiles
+
+```{r}
+binsize <- 100
+promoters(
+    txs.f_match.long, 
+    0.5*binsize, 
+    6e3 + 0.5*binsize
+) %>% 
+    getCountsByPositions(
+        PROseq.b1, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b1_alt$NF
+    ) %>% 
+    lapply("/", binsize) %>% 
+    lapply("*", 1e3) %>% 
+    # average replicates
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(function(x) (x[[1]] + x[[2]]) / 2) %>% 
+    mcMap(
+        function(x, nm) metaSubsampleMatrix(
+            x, 
+            sample.name = nm,
+            lower = 0.25, 
+            upper = 0.75
+        ),
+        ., 
+        names(.)
+    ) %>% 
+    do.call(rbind, .) %>% 
+    mutate(
+        drug = sub(".*_(DMSO|FP)", "\\1", sample.name),
+        KD = sapply(
+            sub("_(DMSO|FP)", "", sample.name), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            paste(KD, "RNAi"), 
+            levels = c("LacZ RNAi", "NELF RNAi")
+        ),
+        x = binsize*x - binsize
+    ) %>% 
+    
+    # no effect on plot area, but removes potentially annoying (hidden) data
+    # from the pdf file
+    subset(x > 1) %>%
+    
+    ggplot(aes(x, mean)) +
+    
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = KD, linetype = drug),
+        color = NA, alpha = 0.1
+    ) +
+    geom_line(
+        aes(color = KD, linetype = drug), 
+        alpha = 0.7
+    ) +
+    
+    scale_color_manual(
+        values = KD_colors
+    ) +
+    scale_fill_manual(
+        values = KD_colors
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 15)
+    ) +
+    scale_x_continuous(
+        limits = c(0, 6e3), 
+        labels = function(x) x / 1e3, 
+        expand = c(0, 0)
+    ) +
+    
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "\nPRO-seq\n(RRPM per kb)",
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none"
+    ) -> fig2b
+fig2b
+```
+
+\ 
+
+## C Browser shot (Ptp10D)
+
+```{r}
+name_i <- "Ptp10D" 
+region <- genebodies(
+    subset(txs.f_match, symbol == name_i), 
+    -250, 
+    1e4,
+    fix.end = "start"
+)
+
+applyNFsGRanges(PROseq.b1, readcounts.b1_alt$NF) %>% 
+    lapply(subsetByOverlaps, region) %>%
+    split(., sub("_rep.", "", names(.))) %>% 
+    mclapply(mergeGRangesData, ncores = 1) %>% 
+    lapply(function(x) {
+        score(x) <- score(x) / 2
+        x
+    }) %>% 
+    (function(x) {
+        names(x) %>% 
+            sub("KD_", " ", .) %>% 
+            sub("NELFe", "NELF", .) %>% 
+            setNames(x, .)
+    }) %>% 
+    plot_shot(
+        region = region,
+        binsize = width(region) / 200, 
+        bin_FUN = . %>% mean %>% "*"(1e3),
+        ylim = if (as.character(strand(region)) == "+") c(0, 15) else c(-15, 0),
+        annotations = txdb,
+        gene_names = txs.f_match$symbol,
+        expand_ranges = FALSE,
+        ncores = 1
+    ) -> fig2c
+fig2c
+```
+
+\ 
+
+## D Browser shot (CG5455)
+
+```{r}
+name_i <- "CG5455" 
+region <- genebodies(
+    subset(txs.f_match, symbol == name_i), 
+    -250, 
+    3e3
+)
+
+applyNFsGRanges(PROseq.b1, readcounts.b1_alt$NF) %>% 
+    lapply(subsetByOverlaps, region) %>%
+    split(., sub("_rep.", "", names(.))) %>% 
+    mclapply(mergeGRangesData, ncores = 1) %>% 
+    lapply(function(x) {
+        score(x) <- score(x) / 2
+        x
+    }) %>% 
+    (function(x) {
+        names(x) %>% 
+            sub("KD_", " ", .) %>% 
+            sub("NELFe", "NELF", .) %>% 
+            setNames(x, .)
+    }) %>% 
+    plot_shot(
+        region = region,
+        binsize = width(region) / 200, 
+        bin_FUN = . %>% mean %>% "*"(1e3),
+        ylim = if (as.character(strand(region)) == "+") c(0, 15) else c(-15, 0),
+        # annotations = txs.f_match,
+        annotations = txdb,
+        gene_names = txs.f_match$symbol,
+        expand_ranges = FALSE,
+        ncores = 1
+    ) -> fig2d
+fig2d
+```
+
+\ 
+
+## E Boxplot LFC(fp/dmso) in +20-50 (with shrinkage):
+
+```{r}
+readcounts.b1_alt$NF %>%
+    "/"(., mean(.)) %>%
+    "/"(1, .) %>%
+    getDESeqDataSet(
+        PROseq.b1, 
+        genebodies(
+            unique(txs.5p_pp), 
+            20, 
+            50, 
+            fix.end = "start"
+        ), 
+        sizeFactors = .
+    ) %>% 
+    getDESeqResults(
+        comparisons = data.frame(
+            c("LacZKD_FP","NELFeKD_FP"), 
+            c("LacZKD_DMSO","NELFeKD_DMSO")
+        ), 
+        lfcShrink = TRUE
+    ) %>%
+    setNames(c("LacZ\nRNAi", "NELF\nRNAi")) %>%
+    lapply(as.data.frame) %>%
+    Map(function(x, nm) mutate(x, sample = nm), ., names(.)) %>%
+    do.call(rbind, .) %>% 
+    
+    # Fix baseMeans to be in RPM units
+    #   Current normalization = counts * NF / mean(NF)
+    #   So multiply by mean(NF)
+    mutate(
+        baseMean = log10( baseMean * mean(readcounts.b1_alt$NF) )
+    ) %>% 
+    
+    mutate(
+        sig = ifelse(
+            padj > 0.05 | is.na(padj), 
+            "Insignificant",
+            ifelse(log2FoldChange < 0, "Down", "Up")
+        ),
+        sig = factor(
+            sig, levels = c("Up", "Insignificant", "Down")
+        ),
+        sample = factor(
+            sample, levels = c("LacZ\nRNAi", "NELF\nRNAi")
+        )
+    ) %>% 
+
+    subset(
+        is.finite(baseMean) & is.finite(log2FoldChange)
+    ) %>%
+    mutate(
+        region = "Pause Region"
+    ) %>%
+    
+    ggplot(
+        aes(
+            sample, 
+            log2FoldChange, 
+            color = sample, 
+            fill = sample
+        )
+    ) +
+    
+    geom_hline(
+        yintercept = 0,
+        size = 0.25
+    ) +
+    geom_boxplot(
+        fill = "white", 
+        width = 0.7, 
+        outlier.alpha = 0.4,
+        outlier.size = 0.6,
+        outlier.shape = 16
+    ) +
+    
+    scale_color_manual(
+        values = pseudotrans_rgb(KD_colors, 0.7)
+    ) +
+    coord_cartesian(
+        ylim = c(-6, 6), 
+        clip = "off"
+    ) +
+    scale_y_continuous(
+        expand = c(0,0)
+    ) +
+    
+    labs(
+        x = NULL, 
+        y = "log2 (FP / DMSO)\nwithin +20-50"
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none",
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank()
+    ) -> fig2e
+fig2e
+```
+
+\ 
+
+## F Metaplot LFC NELF/LacZ (DMSO & FP) early gene body
+
+```{r}
+binsize <- 20
+txs.f_match.long %>% 
+    promoters(
+        0.5*binsize, 
+        3e3 + 0.5*binsize
+    ) %>% 
+    getCountsByPositions(
+        PROseq.b1, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b1_alt$NF
+    ) %>% 
+    # average replicates
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(function(x) (x[[1]] + x[[2]]) / 2) %>% 
+    
+    # split by drug and get lfc vs. lacZ
+    split(., sub(".*KD_", "", names(.))) %>% 
+    lapply(function(x) log2( x[[2]] / x[[1]] )) %>% 
+    lapply(function(x) {
+        x[!is.finite(x)] <- NA
+        x
+    }) %>% 
+    
+    # bootstrap means
+    mcMap(
+        metaSubsampleMatrix, 
+        ., 
+        sample.name = names(.)
+    ) %>% 
+    do.call(rbind, .) %>% 
+    mutate(
+        drug = sample.name,
+        x = binsize*x - binsize
+    ) %>% 
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    geom_line(
+        aes(color = drug)
+    ) +
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = drug),
+        color = NA, alpha = 0.2
+    ) +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed", 
+        size = 0.25
+    ) +
+    
+    scale_color_manual(
+        values = sapply(
+            fptc_colors[c(1, 3)], 
+            adjustcolor, 
+            0.7, 
+            USE.NAMES = FALSE
+        )
+    ) +
+    scale_fill_manual(
+        values = fptc_colors
+    ) +
+    
+    scale_x_continuous(
+        limits = c(0, 3e3), 
+        breaks = seq(0, 3e3, 250),
+        labels = function(x) {
+            x <- x / 1e3
+            x[!seq_along(x) %in% seq(1, length(x), 4)] <- ""
+            x
+        },
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        expand = FALSE,
+        ylim = c(-2, 1),
+        clip = "off"
+    ) +
+    labs(x = "Distance from TSS (kb)", 
+         y = "log2 (NELF / LacZ)",
+         fill = NULL, color = NULL) +
+    theme_md_classic() +
+    theme(
+        strip.text.y = element_text(angle = 0)
+    ) -> fig2f
+fig2f
+```
+
+\ 
+
+### F Inset
+
+Zoom into first 250 bp for an inset:
+
+```{r}
+binsize <- 20
+txs.f_match.long %>% 
+    promoters(
+        0.5*binsize, 
+        300 + 0.5*binsize
+    ) %>% 
+    getCountsByPositions(
+        PROseq.b1, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b1_alt$NF
+    ) %>% 
+    
+    # average replicates
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(function(x) (x[[1]] + x[[2]]) / 2) %>% 
+    
+    # split by drug and get lfc vs. lacZ
+    split(., sub(".*KD_", "", names(.))) %>% 
+    lapply(function(x) log2( x[[2]] / x[[1]] )) %>% 
+    lapply(function(x) {
+        x[!is.finite(x)] <- NA
+        x
+    }) %>% 
+    
+    # bootstrap means
+    mcMap(
+        metaSubsampleMatrix, 
+        ., 
+        sample.name = names(.)
+    ) %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    mutate(
+        drug = sample.name,
+        x = binsize*x - binsize
+    ) %>% 
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    geom_line(
+        aes(color = drug)
+    ) +
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = drug),
+        color = NA, alpha = 0.2
+    ) +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed", 
+        size = 0.25
+    ) +
+    
+    scale_color_manual(
+        values = sapply(
+            fptc_colors[c(1, 3)], 
+            adjustcolor, 
+            0.7, 
+            USE.NAMES = FALSE
+        )
+    ) +
+    scale_fill_manual(
+        values = fptc_colors
+    ) +
+    
+    scale_x_continuous(
+        labels = function(x) {
+            x <- x / 1e3
+            x[!seq_along(x) %in% c(1, length(x))] <- ""
+            x
+        },
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        expand = FALSE,
+        xlim = c(0, 250),
+        ylim = c(-2, 1)
+    ) +
+    labs(
+        x = NULL, 
+        y = NULL,
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_classic() +
+    theme(
+        strip.text.y = element_text(angle = 0),
+        legend.position = "none"
+    ) -> fig2f_inset
+fig2f_inset
+```
+
+\ 
+
+## G-H Heatmap LFC NELF/LacZ (DMSO & FP)
+
+```{r, fig.height=4, fig.width=3}
+binsize <- 250
+
+# Length & Expression subset
+subset(txs.f_match, width > 3e3) %>% # n = 872
+    genebodies(500, -500) %>% 
+    (function(x) {
+        getCountsByRegions(
+            PROseq.b1[1:2], # LacZKD DMSO
+            x,
+            NF = readcounts.b1_alt$NF[1:2]
+        ) %>% 
+            rowMeans %>% 
+            "/"(width(x)) %>% 
+            "*"(1e3)
+    }) %>% 
+    
+    # for no length subsetting, median (TSS+300 to CPS-300) = 9.373 RRPM/kb;
+    # w/ length subsetting, TSS+500 to CPS-500, median = 6.92 RRPM/kb;
+    # will still use 10 RRPM/kb cutoff, though: 
+    #   n = 319 seems good for maintaining resolution
+    ">="(10) %>% 
+    which ->
+    idx
+
+subset(txs.f_match, width > 3e3)[idx] %>%
+
+    .[order(width(.), decreasing = TRUE)] %>%
+
+    (function(x) {
+        promoters(
+            x,
+            0,
+            ifelse(width(x) < 3e4, width(x), 3e4)
+        )
+    }) %>%
+
+    getCountsByPositions(
+        PROseq.b1,
+        .,
+        binsize = binsize,
+        NF = readcounts.b1_alt$NF,
+        simplify.multi.widths = "pad NA"
+    ) %>%
+
+    # average replicates
+    split(., sub("_rep.", "", names(.))) %>%
+    lapply(function(x) (x[[1]] + x[[2]]) / 2) %>% 
+
+    # split by drug and get lfc nelf/fp
+    split(., sub(".*KD_", "", names(.))) %>% 
+    lapply(function(x) log2( x[[2]] / x[[1]] )) %>% 
+    lapply(function(x) {
+        x[!is.finite(x)] <- NA
+        x
+    }) %>% 
+    
+    lapply(
+        melt,
+        varnames = c("gene", "x"),
+        value.name = "lfc"
+    ) %>% 
+    dfList2df %>% 
+
+    mutate(
+        # offset by 0.5 to keep the "pretty" axis (label is left-shifted)
+        #   (left-shifting is actually accurate, as bin starts are labeled;
+        #   using 0.5 works for some reason, avoiding small whitespace at edge,
+        #   but correctly labeling the first bin)
+        x = binsize*x - 0.5*binsize
+    ) %>% 
+    
+    ggplot(
+        aes(x, gene, fill = lfc)
+    ) +
+    facet_grid(
+        ~sample
+    ) +
+    
+    geom_raster() +
+    
+    scale_fill_gradientn(
+        colors = cet_pal(100, "d1a"),
+        limits = function(lims) c(
+            -ceiling(max(abs(lims))),
+            ceiling(max(abs(lims)))
+        ),
+        na.value = "white",
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            title.position = "top",
+            title.hjust = 0.5,
+            draw.ulim = FALSE,
+            draw.llim = FALSE
+        )
+    ) +
+    scale_x_continuous(
+        limits = c(0, 3e4), 
+        labels = function(x) x / 1e3, 
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        clip = "off"
+    ) +
+    
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "Genes by length",
+        fill = "log2 (NELF / LacZ)"
+    ) +
+    theme_md_bw() +
+    theme(
+        legend.position = "top",
+        # axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank()
+    ) -> fig2gh
+fig2gh
+```
+
+\ 
+
+# Supplementary Figure 3
+
+\ 
+
+## A Metaplot filtered pause regions, each replicate
+
+Showing DMSO & FP in the same panel, and showing both replicates and 
+confidence intervals. Otherwise matches Figure 2a.
+
+```{r}
+metaSubsample(
+    PROseq.b1, 
+    promoters(txs.5p_pp, 0, 101),
+    NF = readcounts.b1_alt$NF,
+    first.output.xval = 0
+) %>% 
+    
+    # units RRPM/kb
+    mutate(
+        mean = mean * 1e3,
+        lower = lower * 1e3,
+        upper = upper * 1e3
+    ) %>% 
+
+    mutate(
+        rep = sub(".*rep", "rep", sample.name),
+        drug = sub(".*_(DMSO|FP)_rep.", "\\1", sample.name),
+        KD = sapply(
+            sub("_(DMSO|FP)_rep.", "", sample.name), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            paste(KD, "RNAi"),
+            levels = c(
+                "LacZ RNAi", 
+                "NELF RNAi"
+            )
+        )
+    ) %>% 
+        
+    ggplot(
+        aes(x, mean) 
+    ) +
+    facet_grid(
+        rep~KD
+    ) +
+
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = drug, linetype = drug),
+        color = NA, 
+        alpha = 0.2
+    ) +
+    geom_line(
+        aes(color = drug),
+    ) +
+    
+    scale_color_manual(
+        values = sapply(
+            fptc_colors[c(1, 3)], 
+            adjustcolor, 0.7, 
+            USE.NAMES = FALSE
+        ),
+        aesthetics = c("color", "fill")
+    ) +
+    
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 2.5e3), 
+        clip = "off"
+    ) +
+    labs(
+        x = "Distance from TSS (bp)", 
+        y = "PRO-seq\n(RRPM per kb)",
+        fill = NULL, 
+        color = NULL,
+        title = "Filtered pause regions (n = 3280)"
+    ) +
+    theme_md_bw() +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank()
+    ) -> S3A
+S3A
+```
+
+
+\ 
+
+## B Metaplot pause regions (all annotated), each replicate
+
+To demonstrate that our gene list isn't biased in the sense that our phenotypes
+would be misleading.
+
+Will use all annotated TSSes more than 1kb away from any other annotated TSS.
+
+```{r}
+promoters(txs, 0, 101) %>% 
+    unique %>% 
+    (function(x) {
+        distanceToNearest(x) %>% 
+            mcols %>% 
+            unlist %>% 
+            ">"(1e3) %>% 
+            which %>% 
+            x[.] # n = 14741
+    }) %>% 
+
+    metaSubsample(
+        PROseq.b1, 
+        .,
+        NF = readcounts.b1_alt$NF,
+        first.output.xval = 0
+    ) %>% 
+    
+    # units RRPM/kb
+    mutate(
+        mean = mean * 1e3,
+        lower = lower * 1e3,
+        upper = upper * 1e3
+    ) %>% 
+
+    mutate(
+        rep = sub(".*rep", "rep", sample.name),
+        drug = sub(".*_(DMSO|FP)_rep.", "\\1", sample.name),
+        KD = sapply(
+            sub("_(DMSO|FP)_rep.", "", sample.name), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            paste(KD, "RNAi"),
+            levels = c(
+                "LacZ RNAi", 
+                "NELF RNAi"
+            )
+        )
+    ) %>% 
+        
+    ggplot(
+        aes(x, mean) 
+    ) +
+    facet_grid(rep~KD) +
+
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = drug, linetype = drug),
+        color = NA, 
+        alpha = 0.2
+    ) +
+    geom_line(
+        aes(color = drug),
+    ) +
+    
+    scale_color_manual(
+        values = sapply(
+            fptc_colors[c(1, 3)], 
+            adjustcolor, 0.7, 
+            USE.NAMES = FALSE
+        ),
+        aesthetics = c("color", "fill")
+    ) +
+
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 500), 
+        clip = "off"
+    ) +
+    labs(
+        x = "Distance from TSS (bp)", 
+        y = "PRO-seq\n(RRPM per kb)",
+        fill = NULL, 
+        color = NULL,
+        title = "Annotated TSSes >1kb apart (n = 14471)"
+    ) +
+    theme_md_bw() +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank()
+    ) -> S3B
+S3B
+```
+
+\ 
+
+## C Shift in median pause position
+
+For FP, NELF, and NELF+FP: each vs. LacZ DMSO.
+
+This uses just a little expression subsetting to avoid noise.
+
+```{r}
+# n = 1259/1560
+getCountsByRegions(
+    PROseq.b1[1:2], # LacZKD DMSO
+    promoters(txs.f_pp_all, 0, 101),
+    NF = readcounts.b1_alt$NF[1:2]
+) %>%
+    rowMeans %>%
+    ">="(5) %>%
+    which ->
+    idx
+
+getCountsByPositions(
+    PROseq.b1, 
+    promoters(txs.f_pp_all[idx], 0, 101)
+) %>%
+    
+    # combine replicates for this
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(. %>% do.call("+", .)) %>%
+    
+    # for the median position function, must ensure all regions have signal
+    (function(x) {
+        stopifnot(
+            all(
+                sapply(x, . %>% rowSums %>% ">"(0) %>% all)
+            )
+        )
+        x
+    }) %>% 
+
+    # for each gene, get median position
+    mclapply(
+        apply, 
+        1, 
+        . %>% "/"(., sum(.)) %>% cumsum %>% ">="(0.5) %>% which %>% min
+    ) %>% 
+
+    # will now get all shifts for each vs. LacZ DMSO
+    (function(x) lapply(x[-1], "-", x[[1]])) %>% 
+    
+    as.data.frame %>%
+    melt(
+        ., 
+        measure.vars = names(.),
+        value.name = "diff",
+        variable.name = "condition"
+    ) %>%
+    
+    mutate(
+        KD = ifelse(
+            grepl("LacZ", condition),
+            "LacZ",
+            "NELF"
+        ), 
+        drug = ifelse(
+            grepl("DMSO", condition),
+            "DMSO",
+            "FP"
+        ),
+        condition = sapply(
+            as.character(condition),
+            switch,
+            LacZKD_FP = "LacZ RNAi +FP",
+            NELFeKD_DMSO = "NELF RNAi +DMSO",
+            NELFeKD_FP = "NELF RNAi +FP"
+        ),
+        condition = factor(condition)
+    ) %>% 
+    
+    ggplot(
+        aes(condition, diff, color = KD, fill = KD)
+    ) +
+    
+    geom_hline(
+        yintercept = 0, 
+        size = 0.25
+    ) +
+    geom_boxplot(
+        fill = "white",
+        size = 0.25,
+        outlier.size = 0.4,
+        outlier.alpha = 0.4,
+        outlier.shape = 16
+    ) +
+    
+    scale_color_manual(
+        values = pseudotrans_rgb(KD_colors, 0.7)
+    ) +
+    
+    coord_cartesian(
+        clip = "off",
+        ylim = c(-20, 40)
+    ) +
+    scale_y_continuous(
+        expand = c(0, 0)
+    ) +
+    
+    labs(
+        x = NULL,
+        y = expression(paste(Delta, "Median pause position (bp)"))
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 30, hjust = 1),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+    ) -> S3C
+S3C
+```
+
+\ 
+
+## D Metagene profile gene bodies, each replicate
+
+```{r}
+binsize <- 100
+
+metaSubsample(
+    PROseq.b1,
+    promoters(
+        txs.f_match.long,
+        0.5*binsize,
+        6e3 + 0.5*binsize
+    ),
+    binsize = binsize,
+    NF = readcounts.b1_alt$NF,
+    lower = 0.25, 
+    upper = 0.75,
+    first.output.xval = -49.5 # puts first bin @ 0
+) %>%
+    
+    # RRPM/kb (binsize already normalized in metaSubsample)
+    mutate(
+        mean = mean * 1e3,
+        lower = lower * 1e3,
+        upper = upper * 1e3
+    ) %>% 
+    
+    mutate(
+        rep = sub(".*rep", "rep", sample.name),
+        drug = sub(".*_(DMSO|FP)_rep.", "\\1", sample.name),
+        KD = sapply(
+            sub("_(DMSO|FP)_rep.", "", sample.name),
+            switch,
+            LacZKD = "LacZ",
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            paste(KD, "RNAi"),
+            levels = c(
+                "LacZ RNAi",
+                "NELF RNAi"
+            )
+        )
+    ) %>%
+    
+    # no effect on visible plot area, but removes sometimes annoying hidden data
+    # from the pdf file
+    subset(x > 100) %>%
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    facet_grid(
+        rep~drug
+    ) +
+    
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = KD),
+        color = NA, alpha = 0.1
+    ) +
+    geom_line(
+        aes(color = KD), 
+        alpha = 0.7
+    ) +
+    
+    scale_color_manual(
+        values = KD_colors,
+        aesthetics = c("color", "fill")
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 15)
+    ) +
+    scale_x_continuous(
+        limits = c(0, 6e3), 
+        labels = function(x) x / 1e3, 
+        expand = c(0, 0)
+    ) +
+    
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "PRO-seq\n(RRPM per kb)",
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_bw() +
+    theme(
+        legend.position = "none",
+        panel.grid = element_blank(),
+        strip.text.y = element_text(hjust = 0)
+    ) -> S3D
+S3D
+```
+
+\ 
+
+## E Boxplot LFC NELF vs LacZ, DMSO & FP
+
+For manuscript revision, this is to address a reviewer concern related to the 
+fraction of genes with aberrant density (the global nature of the early gene 
+body phenotype in NELF RNAi +FP).
+
+\ 
+
+### OBJECT
+
+```{r}
+subset(txs.f, width > 1.6e3) %>% 
+    (function(x) list(
+        pr = promoters(x, 0, 100),
+        gb = genebodies(x, 301, 1.3e3, fix.end = "start")
+    )) %>% 
+    lapply(function(x) {
+        # get comparison names, each FP & DMSO LFC vs. LacZ
+        names(PROseq.b1) %>% 
+            sub("_rep.", "", .) %>% 
+            unique %>% 
+            split(., sub("_(DMSO|FP)", "", .)) %>% 
+            (function(x) lapply(x[-1], cbind, x[[1]])) %>% 
+            do.call(rbind, .) %>% 
+            as.data.frame %>% 
+            setNames(NULL) ->
+            comparisons
+        
+        # get DESeq2 results
+        readcounts.b1_alt$NF %>%
+            "/"(., mean(.)) %>%
+            "/"(1, .) %>% 
+            getDESeqDataSet(
+                PROseq.b1, 
+                x, 
+                sizeFactors = .
+            ) %>% 
+            getDESeqResults(
+                comparisons = comparisons, 
+                lfcShrink = TRUE
+            ) %>% 
+            lapply(as.data.frame) %>% 
+            
+            # (fix units in baseMean)
+            lapply(
+                mutate, 
+                baseMean = baseMean * mean(readcounts.b1_alt$NF)
+            ) %>% 
+            lapply("[", c("baseMean", "log2FoldChange", "padj")) %>% 
+            lapply(
+                . %>% 
+                    cbind(
+                        data.frame(gene = seq_len(nrow(.))), 
+                        .
+                    )
+            ) %>% 
+            setNames(., sub("_vs.*", "", names(.))) %>% 
+            Map(
+                function(x, nm) mutate(x, sample = nm), 
+                ., 
+                names(.)
+            ) %>% 
+            c(make.row.names = FALSE) %>% 
+            do.call(rbind, .)
+    }) %>% 
+    
+    # combine pause & genebody LFCs into single dataframe
+    Map(function(x, nm) mutate(x, region = nm), ., names(.)) %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    mutate(
+        drug = sub(".*_(DMSO|FP)", "\\1", sample),
+        KD = sub("_(DMSO|FP)", "", sample),
+        KD = sub("NELFeKD", "NELF RNAi", KD)
+    ) -> dsres_ne_vs_lz_fp_dmso_pr_gb
+```
+
+
+### The plot
+
+```{r}
+dsres_ne_vs_lz_fp_dmso_pr_gb %>% 
+
+    subset(region == "gb") %>% # early GB; txs.f >1.6kb, 301-1300 from TSS
+
+    subset(is.finite(baseMean) & is.finite(log2FoldChange)) %>% 
+    
+    ggplot(
+        aes(drug, log2FoldChange, color = drug)
+    ) +
+
+    geom_hline(
+        yintercept = 0,
+        size = 0.25
+    ) +
+    geom_boxplot(
+        fill = "white", 
+        width = 0.7, 
+        outlier.alpha = 0.4,
+        outlier.size = 0.6,
+        outlier.shape = 16
+    ) +
+    
+    scale_color_manual(
+        values = sapply(
+            fptc_colors[c(1, 3)], adjustcolor, 0.7, USE.NAMES = FALSE
+        )
+    ) +
+    
+    labs(
+        x = NULL, 
+        y = "PRO-seq log2 (NELF/LacZ)\nwithin TSS+300 to TSS+1300", 
+        color = NULL
+    ) +
+    coord_cartesian(
+        clip = "off",
+        ylim = c(-4, 4)
+    ) +
+    scale_y_continuous(
+        expand = c(0, 0)
+    ) +
+    
+    theme_md_classic() +
+    theme(
+        legend.position = "none",
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+```
+
+Count genes with positive values in FP:
+
+```{r}
+dsres_ne_vs_lz_fp_dmso_pr_gb %>% 
+    subset(region == "gb") %>% # early GB; txs.f >1.6kb, 301-1300 from TSS
+    subset(drug == "FP") %>% # n=1243, as it should be
+    subset(log2FoldChange > 0) %>% 
+    nrow # n=993
+```
+
+\ 
+
+# Figure 3
+
+## A Hexbin gb LFC FP/DMSO vs. signal in pr & gb
+
+(the code below runs twice to remake the same object...)
+
+\ 
+
+### Left: LFC GB (FP/DMSO) vs. GB Signal (DMSO)
+
+
+```{r}
+subset(txs.f_match, width > 1.6e3) %>% 
+    (function(x) 
+        list(
+            gb = genebodies(x, 300, 1300, fix.end = "start"),
+            pr = promoters(x, 0, 100)
+        )
+    ) %>% 
+    
+    Map(function(region, nm) {
+        getCountsByRegions(
+            PROseq.b1, 
+            region, 
+            NF = readcounts.b1_alt$NF
+        ) %>% 
+            # avg replicates
+            as.list %>%
+            split(., sub("_rep.", "", names(.))) %>%
+            lapply(. %>% do.call("+", .) %>% "/"(2)) %>% 
+            
+            # for each KD, get DMSO signal, and LFC in FP/DMSO
+            split(., sub("_(DMSO|FP)", "", names(.))) %>% 
+            lapply(function(x) {
+                data.frame(
+                    signal = x[[1]],
+                    log2fc = log2(x[[2]] / x[[1]])
+                ) %>% 
+                    setNames(., paste0(names(.), "_", nm))
+            }) %>% 
+            dfList2df("KD")
+    }, ., names(.)) %>% 
+    
+    # combine into a single dataframe
+    (function(x) {
+        cbind(x[[1]][,1:2], x[[2]])
+    }) %>% 
+    
+    mutate(
+        # fix into units RRPM/kb
+        signal_pr = log10(10*signal_pr),
+        signal_gb = log10(signal_gb),
+        
+        signal_pr = ifelse(!is.finite(signal_pr), NA, signal_pr),
+        signal_gb = ifelse(!is.finite(signal_gb), NA, signal_gb),
+        
+        log2fc_pr = ifelse(!is.finite(log2fc_pr), NA, log2fc_pr),
+        log2fc_gb = ifelse(!is.finite(log2fc_gb), NA, log2fc_gb),
+        KD = sapply(
+            KD, 
+            switch, 
+            LacZKD = "LacZ RNAi", 
+            NELFeKD = "NELF RNAi"
+        )
+    ) %>% 
+    
+    subset(
+        is.finite(signal_pr) & 
+            is.finite(signal_gb) &
+            is.finite(log2fc_gb)
+    ) %>% 
+    
+    ggplot(
+        aes(signal_gb, log2fc_gb)
+    ) +
+    facet_rep_grid(~KD) +
+    
+    geom_hex() +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    geom_smooth(
+        method = "lm",
+        color = "#CC0000" 
+    ) +
+    
+    scale_fill_viridis(
+        trans = "log2",
+        limits = c(1, 32),
+        breaks = 2^(0:5),
+        oob = scales::oob_squish,
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            barwidth = 0.7,
+            barheight = 3.5,
+            title.position = "top",
+            title.hjust = 0.5,
+            draw.ulim = FALSE,
+            draw.llim = FALSE
+        )
+    ) +
+    coord_cartesian(
+        clip = "off",
+        xlim = c(-2, 3),
+        ylim = c(-5, 2.5),
+        expand = FALSE
+    ) +
+    
+    labs(
+        x = "Early gene body (DMSO)\n(log10 RRPM per kb)",
+        y = "Early gene body (DMSO)\nlog2 (FP / DMSO)",
+        fill = "genes"
+    ) +
+    theme_md_classic() +
+    theme(
+        aspect.ratio = 1,
+        legend.position = "right"
+    ) -> fig3a_left
+fig3a_left
+```
+\ 
+
+### Right: LFC GB (FP/DMSO) vs. PR Signal (DMSO)
+
+```{r}
+subset(txs.f_match, width > 1.6e3) %>% 
+    (function(x) 
+        list(
+            gb = genebodies(x, 300, 1300, fix.end = "start"),
+            pr = promoters(x, 0, 100)
+        )
+    ) %>% 
+    
+    Map(function(region, nm) {
+        getCountsByRegions(
+            PROseq.b1, 
+            region, 
+            NF = readcounts.b1_alt$NF
+        ) %>% 
+            # avg replicates
+            as.list %>%
+            split(., sub("_rep.", "", names(.))) %>%
+            lapply(. %>% do.call("+", .) %>% "/"(2)) %>% 
+            
+            # for each KD, get DMSO signal, and LFC in FP/DMSO
+            split(., sub("_(DMSO|FP)", "", names(.))) %>% 
+            lapply(function(x) {
+                data.frame(
+                    signal = x[[1]],
+                    log2fc = log2(x[[2]] / x[[1]])
+                ) %>% 
+                    setNames(., paste0(names(.), "_", nm))
+            }) %>% 
+            dfList2df("KD")
+    }, ., names(.)) %>% 
+    
+    # combine into a single dataframe
+    (function(x) {
+        cbind(x[[1]][,1:2], x[[2]])
+    }) %>% 
+    
+    mutate(
+        # fix into units RRPM/kb
+        signal_pr = log10(10*signal_pr),
+        signal_gb = log10(signal_gb),
+        
+        signal_pr = ifelse(!is.finite(signal_pr), NA, signal_pr),
+        signal_gb = ifelse(!is.finite(signal_gb), NA, signal_gb),
+        
+        log2fc_pr = ifelse(!is.finite(log2fc_pr), NA, log2fc_pr),
+        log2fc_gb = ifelse(!is.finite(log2fc_gb), NA, log2fc_gb),
+        KD = sapply(
+            KD, 
+            switch, 
+            LacZKD = "LacZ RNAi", 
+            NELFeKD = "NELF RNAi"
+        )
+    ) %>% 
+    
+    subset(
+        is.finite(signal_pr) & 
+            is.finite(signal_gb) &
+            is.finite(log2fc_gb)
+    ) %>% 
+    
+    ggplot(
+        aes(signal_pr, log2fc_gb)
+    ) +
+    facet_rep_grid(~KD) +
+    
+    geom_hex() +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    geom_smooth(
+        method = "lm",
+        color = "#CC0000" 
+    ) +
+    
+    scale_fill_viridis(
+        trans = "log2",
+        limits = c(1, 32),
+        breaks = 2^(0:5),
+        oob = scales::oob_squish,
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            barwidth = 0.7,
+            barheight = 3.5,
+            title.position = "top",
+            title.hjust = 0.5,
+            draw.ulim = FALSE,
+            draw.llim = FALSE
+        )
+    ) +
+    coord_cartesian(
+        clip = "off",
+        xlim = c(-1, 4),
+        ylim = c(-5, 2.5),
+        expand = FALSE
+    ) +
+    
+    labs(
+        x = "Pause region (DMSO)\n(log10 RRPM)",
+        y = "Early gene body (DMSO)\nlog2 (FP / DMSO)",
+        fill = "genes"
+    ) +
+    theme_md_classic() +
+    theme(
+        aspect.ratio = 1,
+        legend.position = "right"
+    ) -> fig3a_right
+fig3a_right
+```
+
+\ 
+
+### Assemble
+
+```{r}
+fig3a_left + fig3a_right + 
+    plot_layout(guides = "collect")
+```
+
+\ 
+
+## B 3D MA plot
+
+\ 
+
+### OBJECT
+
+Object made in S3E
+
+\ 
+
+### The plot
+
+```{r}
+dsres_ne_vs_lz_fp_dmso_pr_gb %>% 
+    # Get bins of promoter & genebody expression in DMSO baseMeans
+    #   (different for each KD)
+    split(., .$KD) %>% 
+    lapply(function(df) {
+        bins <- df %>% 
+            subset(drug == "DMSO") %>% 
+            split(., .$region) %>% 
+            lapply("[[", "baseMean") %>% 
+            lapply(log10) %>% 
+            as.data.frame %>% 
+            mutate(pr = 1 + pr) %>% 
+            binNdimensions(nbins = 30, use_bin_numbers = FALSE) %>% 
+            cbind(data.frame(gene = seq_len(nrow(.))), .) 
+        
+        df <- left_join(df, bins, by = "gene")
+        
+        # aggregate the mean lfc
+        aggregate(
+            df["log2FoldChange"], 
+            by = df[c("bin.gb", "bin.pr", "region", "KD", "drug")],
+            FUN = . %>% mean(na.rm = TRUE)
+        )
+    }) %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    subset(region == "gb" & drug == "FP") %>% 
+    
+    # saturate signal
+    mutate(
+        log2FoldChange = ifelse(
+            abs(log2FoldChange) > 4, 
+            4 * sign(log2FoldChange), 
+            log2FoldChange
+        )
+    ) %>% 
+
+    # (drop one outlier pausing bin, which only has a single gene)
+    subset(
+        bin.pr > -1
+    ) %>% 
+    
+    ggplot(
+        aes(bin.gb, bin.pr, fill = log2FoldChange)
+    ) +
+
+    geom_tile() +
+    
+    scale_fill_gradientn(
+        colors = cet_pal(100, "d1a"),
+        limits = function(lims) c(
+            -ceiling(max(abs(lims))), 
+            ceiling(max(abs(lims)))
+        ),
+        na.value = "white",
+        breaks = seq(-3, 3, 1.5),
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            title.position = "top",
+            title.hjust = 0.5,
+            barheight = 0.7,
+            draw.ulim = FALSE,
+            draw.llim = FALSE
+        )
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(-1, 4), 
+        xlim = c(-2.5, 2.5),
+        clip = "off"
+    ) +
+    
+    labs(
+        x = "Early gene body (DMSO)\n(log10 RRPM per kb)",
+        y = "Pause region (DMSO)\n(log10 RRPM per kb)",
+        fill = "Early gene body\nlog2( NELF+FP / LacZ+FP )"
+    ) +
+    theme_md_classic() +
+    theme(
+        aspect.ratio = 1,
+        legend.position = "top",
+        legend.text = element_text(size = 8),
+        strip.text.y = element_text(angle = 0)
+    ) -> fig3b
+fig3b
+```
+
+\ 
+
+## C Metaplot by pr quantiles
+
+\ 
+
+### OBJECT
+
+This object is a gene list annotated with counts.
+
+First, generate a larger gene list with pause region, gene body, and pausing
+index annotations in the metadata.
+
+```{r}
+# (txs.f_match is just more length-filtered than txs.f)
+subset(txs.f, width > 1.6e3) %>% 
+    (function(x) 
+        list(
+            pr = promoters(x, 0, 100),
+            gb = genebodies(x, 301, 1.3e3, fix.end = "start")
+        )
+    ) %>% 
+    lapply({
+        . %>% 
+            getCountsByRegions(
+                PROseq.b1[c(1:2, 5:6)], # DMSO conditions, LacZ and NELF
+                .,
+                NF = readcounts.b1_alt$NF[c(1:2, 5:6)]
+            ) %>% 
+            rowMeans
+    }) %>% 
+    as.data.frame %>% 
+    
+    # length-normalize (use 1kb as the length); get pausing indices
+    mutate(
+        pr = pr*10,
+        pidx = pr / gb
+    ) %>% 
+    
+    # add that to mcols of genes
+    (function(x) {
+        gr <- subset(txs.f, width > 1.6e3)
+        mcols(gr) <- cbind(mcols(gr), x)
+        gr
+    }) -> counts_anno_txsf_1p6kb # same as subset(txs.f, width > 1.6e3)
+```
+
+
+\ 
+
+### The plot
+
+```{r}
+binsize <- 100
+
+counts_anno_txsf_1p6kb %>% 
+    
+    subset(gb > 6 & gb < 28) %>% # n = 618
+    subset(pr > 54 & pr < 5000) %>% # n = 492 (123 per quartile)
+
+    (function(x) {
+        mcols(x) <- mcols(x) %>% 
+            as.data.frame %>% 
+            mutate(
+                quant.pr = rank(pr) / length(pr),
+                qpr = findInterval(
+                    quant.pr,
+                    seq(0, 1, 0.25),
+                    rightmost.closed = TRUE
+                ),
+                qpr = factor(qpr)
+            )
+        x
+    }) %>% 
+    
+    # take from TSS to CPS-300, but cap at 10kb from TSS
+    genebodies(0, -300) %>%
+    promoters(
+        ., 
+        0.5*binsize,
+        ifelse(
+            width(.) > 1e4 + 0.5*binsize,
+            1e4 + 0.5*binsize,
+            width(.)
+        )
+    ) %>% 
+    
+    # split by pausing quartile
+    split(., .$qpr) %>% 
+    
+    # bootstrap means for each of those groups
+    lapply({
+        . %>% 
+            getCountsByPositions(
+                PROseq.b1, 
+                ., 
+                binsize = binsize,
+                NF = readcounts.b1_alt$NF,
+                simplify.multi.widths = "pad NA"
+            ) %>% 
+            
+            # average replicates
+            split(., sub("_rep.", "", names(.))) %>% 
+            lapply(. %>% do.call("+", .) %>% "/"(2)) %>% 
+            
+            # Normalize to RRPM/kb
+            lapply("/", binsize) %>% 
+            lapply("*", 1e3) %>% 
+            
+            Map(metaSubsampleMatrix, ., 
+                sample.name = names(.),
+                lower = 0.25, upper = 0.75) %>% 
+            c(make.row.names = FALSE) %>% 
+            do.call(rbind, .)
+    }) %>% 
+    
+    dfList2df("quant.pr") %>% 
+    
+    # aesthetic: avoid meaningless vertical line in first bins
+    subset(x > 1) %>% 
+    
+    mutate(
+        drug = sub(".*(DMSO|FP).*", "\\1", sample.name),
+        rep = sub(".*rep", "rep", sample.name),
+        KD = sapply(
+            sub("_(DMSO|FP).*", "", sample.name), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ), 
+        KD = factor(
+            paste(KD, "RNAi"), 
+            levels = c("LacZ RNAi", "NELF RNAi")
+        ), 
+        quant.pr = factor(quant.pr),
+        x = binsize * x - binsize
+    ) %>% 
+    
+    # plot
+    ggplot(aes(x, mean)) +
+    facet_grid(drug~quant.pr) +
+    
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = KD),
+        color = NA, alpha = 0.2
+    ) +
+    geom_line(
+        aes(color = KD), alpha = 0.7
+    ) +
+    
+    scale_color_manual(
+        values = KD_colors
+    ) +
+    scale_fill_manual(
+        values = KD_colors
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 15)
+    ) + 
+    scale_x_continuous(
+        limits = c(0, 6e3), 
+        labels = function(x) x / 1e3, 
+        expand = c(0, 0)
+    ) +
+    
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "PRO-seq (RRPM per kb)",
+        fill = NULL, color = NULL
+    ) +
+    theme_md_bw() +
+    theme(
+        legend.position = "none",
+        strip.text.y = element_text(angle = 0, hjust = 0),
+        panel.grid = element_blank()
+    ) -> fig3c
+fig3c
+```
+
+\ 
+
+
+# Supplementary Figure 4
+
+\ 
+
+## OBJECT
+
+Object made for Figure3c.
+
+\ 
+
+## A Scatter ~all genes & color LFC
+
+\ 
+
+### OBJECT (from main fig)
+
+Object made in S3E.
+
+(And plotting only genes with  >1 RRPM/kb in pr & gb)
+
+\ 
+
+### Left: Plot high LFC on top
+
+```{r}
+dsres_ne_vs_lz_fp_dmso_pr_gb %>% 
+    (function(df) {
+        df %>% 
+            subset(drug == "DMSO") %>% 
+            split(., .$region) %>% 
+            lapply("[[", "baseMean") %>% 
+            as.data.frame %>% 
+            cbind(
+                subset(df, drug == "FP" & region == "gb"),
+                .
+            )
+    }) %>% 
+    
+    mutate(
+        gb = log10(gb),
+        pr = log10(10*pr)
+    ) %>% 
+    
+    subset(
+        gb > 0 & pr > 0
+    ) %>% 
+    
+    subset(
+        is.finite(gb) & is.finite(pr) & is.finite(log2FoldChange)
+    ) %>% 
+    
+    # want high values on top
+    .[order(.$log2FoldChange), ] %>% 
+    
+    ggplot(
+        aes(gb, pr, color = log2FoldChange)
+    ) +
+    geom_point(
+        size = 1
+    ) +
+    
+    scale_color_gradientn(
+        colors = cet_pal(100, "d1a"),
+        limits = function(lims) c(
+            -ceiling(max(abs(lims))), 
+             ceiling(max(abs(lims)))
+        ),
+        na.value = "white",
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            title.position = "top",
+            title.hjust = 0.5,
+            barheight = 0.7,
+            draw.ulim = FALSE,
+            draw.llim = FALSE
+        )
+    ) +
+    
+    coord_cartesian(
+        clip = "off",
+        xlim = c(-0.25, 3),
+        ylim = c(0, 4),
+        expand = FALSE
+    ) +
+
+    labs(
+        x = "Early gene body (DMSO)\nlog10 RRPM per kb",
+        y = "Pause region (DMSO)\nlog10 RRPM per kb",
+        color = "Early gene body L2FC\nNELF+FP / LacZ+FP"
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "top",
+        legend.text = element_text(size = 8),
+        strip.text.y = element_text(angle = 0)
+    ) -> S4A_left
+S4A_left
+```
+
+\ 
+
+### Right: Plot low LFC on top
+
+And replot, with lowest values on top
+
+```{r}
+dsres_ne_vs_lz_fp_dmso_pr_gb %>% 
+    (function(df) {
+        df %>% 
+            subset(drug == "DMSO") %>% 
+            split(., .$region) %>% 
+            lapply("[[", "baseMean") %>% 
+            as.data.frame %>% 
+            cbind(
+                subset(df, drug == "FP" & region == "gb"),
+                .
+            )
+    }) %>% 
+    
+    mutate(
+        gb = log10(gb),
+        pr = log10(10*pr)
+    ) %>% 
+    
+    subset(
+        gb > 0 & pr > 0
+    ) %>% 
+    
+    subset(
+        is.finite(gb) & is.finite(pr) & is.finite(log2FoldChange)
+    ) %>% 
+    
+    # this time, low values on top
+    .[order(.$log2FoldChange, decreasing = TRUE), ] %>% 
+    
+    ggplot(
+        aes(gb, pr, color = log2FoldChange)
+    ) +
+    geom_point(
+        size = 1
+    ) +
+    
+    scale_color_gradientn(
+        colors = cet_pal(100, "d1a"),
+        limits = function(lims) c(
+            -ceiling(max(abs(lims))), 
+             ceiling(max(abs(lims)))
+        ),
+        na.value = "white",
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            title.position = "top",
+            title.hjust = 0.5,
+            barheight = 0.7,
+            # barwidth = 3.5,
+            draw.ulim = FALSE,
+            draw.llim = FALSE
+        )
+    ) +
+    
+    coord_cartesian(
+        clip = "off",
+        xlim = c(-0.25, 3),
+        ylim = c(0, 4),
+        expand = FALSE
+    ) +
+
+    labs(
+        x = "Early gene body (DMSO)\nlog10 RRPM per kb",
+        y = "Pause region (DMSO)\nlog10 RRPM per kb",
+        color = "Early gene body L2FC\nNELF+FP / LacZ+FP"
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "top",
+        legend.text = element_text(size = 8),
+        strip.text.y = element_text(angle = 0)
+    ) -> S4A_right
+S4A_right
+```
+
+\ 
+
+## B Hexbin density, gene body vs. pause region
+
+```{r}
+# get mean counts in early genebodies & pause regions
+subset(txs.f, width > 1.6e3) %>%
+    (function(x) 
+        list(
+            pr = promoters(x, 0, 100),
+            gb = genebodies(x, 301, 1.3e3, fix.end = "start")
+        )
+    ) %>%
+    lapply(function(x) {
+        getCountsByRegions(
+            PROseq.b1[c(1:2, 5:6)], 
+            x, 
+            NF = readcounts.b1_alt$NF[c(1:2, 5:6)]
+        ) %>% 
+            rowMeans
+    }) %>% 
+    as.data.frame %>% 
+    
+    # convert to RRPM per kb (pause just x10)
+    mutate(
+        pr = log10(10*pr),
+        gb = log10(gb)
+    ) %>% 
+    
+    # get number of genes in 2d bins
+    densityInNdimBins(
+        nbins = 30, 
+        use_bin_numbers = FALSE
+    ) %>% 
+    
+    # (drop one outlier pausing bin, which only has a single gene)
+    subset(
+        bin.pr > -1
+    ) %>% 
+    
+    ggplot(
+        aes(bin.gb, bin.pr, fill = value)
+    ) +
+    
+    geom_tile() +
+    scale_fill_viridis(
+        trans = "log2", 
+        na.value = "white",
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            title.position = "top",
+            barwidth = 0.7,
+            barheight = 3.5,
+            draw.ulim = FALSE
+        )
+    ) +
+    coord_cartesian(
+        expand = FALSE,
+        ylim = c(-1, 4),
+        xlim = c(-2.5, 2.5),
+        clip = "off"
+    ) +
+    
+    labs(
+        x = "Early gene body (DMSO)\n(log10 RRPM per kb)",
+        y = "Pause region (DMSO)\n(log10 RRPM per kb)",
+        fill = "genes"
+    ) +
+    theme_md_classic() +
+    theme(
+        aspect.ratio = 1,
+        legend.position = "right"
+    ) -> S4B
+S4B
+```
+
+\ 
+
+## C Scatterplot gene subset for pausing quartiles
+
+\ 
+
+### OBJECT
+
+Object made in Figure3c
+
+\ 
+
+### The plot
+
+Boxing the quartiles as well:
+
+```{r}
+counts_anno_txsf_1p6kb %>% 
+    
+    subset(gb > 6 & gb < 28) %>% # n = 618
+    subset(pr > 54 & pr < 5000) %>% # n = 492 (123 per quartile)
+    
+    (function(x) {
+        mcols(x) <- mcols(x) %>% 
+            as.data.frame %>% 
+            mutate(
+                quant.pr = rank(pr) / length(pr),
+                qpr = findInterval(
+                    quant.pr,
+                    seq(0, 1, 0.25),
+                    rightmost.closed = TRUE
+                ),
+                qpr = factor(qpr)
+            )
+        x
+    }) %>% 
+    
+    mcols %>% 
+    as.data.frame %>% 
+    
+    split(., .$qpr) %>% 
+    lapply(. %>% .$pr %>% log10 %>% range)
+```
+
+
+```{r}
+
+counts_anno_txsf_1p6kb %>% 
+
+    mcols %>% 
+    as.data.frame %>% 
+    
+    mutate(
+        gb = log10(gb),
+        pr = log10(pr),
+        pidx = log2(pidx)
+    ) %>% 
+    
+    subset(gb > 0 & gb < 2) %>% 
+    
+    ggplot(aes(gb, pr)) +
+    
+    geom_point(
+        size = 0.5, 
+        alpha = 0.5,
+        shape = 16
+    ) +
+    
+    # full box (not drawn) (for aes(pr, gb), not aes(gb, pr))
+    # geom_rect(
+    #     aes(
+    #         ymin = log10(6),
+    #         ymax = log10(28),
+    #         xmin = log10(54),
+    #         xmax = log10(5000)
+    #     ),
+    #     # linetype = "dashed",
+    #     fill = NA,
+    #     alpha = 0.5,
+    #     color = "blue",
+    #     size = 0.25
+    # ) +
+    
+    # breaks for the pause region quartiles
+    # 1.735 2.108
+    # 2.113 2.605
+    # 2.607 3.085
+    # 3.085 3.625
+    
+    # chosen border values for plot
+    # 1.735 2.110
+    # 2.110 2.606
+    # 2.606 3.0855
+    # 3.0855 3.6254
+    
+    geom_rect(
+        aes(
+            xmin = log10(6),
+            xmax = log10(28),
+            ymin = 1.735,
+            ymax = 2.110
+        ),
+        fill = NA,
+        color = "blue",
+        size = 0.25
+    ) +
+    geom_rect(
+        aes(
+            xmin = log10(6),
+            xmax = log10(28),
+            ymin = 2.110,
+            ymax = 2.606
+        ),
+        fill = NA,
+        color = "blue",
+        size = 0.25
+    ) +
+    geom_rect(
+        aes(
+            xmin = log10(6),
+            xmax = log10(28),
+            ymin = 2.606,
+            ymax = 3.0855
+        ),
+        fill = NA,
+        color = "blue",
+        size = 0.25
+    ) +
+    geom_rect(
+        aes(
+            xmin = log10(6),
+            xmax = log10(28),
+            ymin = 3.0855,
+            ymax = 3.6254
+        ),
+        fill = NA,
+        color = "blue",
+        size = 0.25
+    ) +
+    
+    coord_cartesian(
+        ylim = c(0, 4),
+        xlim = c(0, 2),
+        expand = FALSE,
+        clip = "off"
+    ) +
+    labs(
+        y = "Pause region (DMSO)\n(log10 RRPM per kb)",
+        x = "Early gene body (DMSO)\n(log10 RRPM per kb)"
+    ) +
+    theme_md_classic() -> S4C
+S4C
+```
+
+\ 
+
+## D Boxplot early gene body by pausing quartiles
+
+\ 
+
+### OBJECT
+
+Object made in Figure 3c.
+
+\ 
+
+### The plot
+
+```{r}
+counts_anno_txsf_1p6kb %>% 
+    
+    subset(gb > 6 & gb < 28) %>% # n = 618
+    subset(pr > 54 & pr < 5000) %>% # n = 492 (123 per quartile)
+
+    (function(x) {
+        mcols(x) <- mcols(x) %>% 
+            as.data.frame %>% 
+            mutate(
+                quant.pr = rank(pr) / length(pr),
+                qpr = findInterval(
+                    quant.pr,
+                    seq(0, 1, 0.25),
+                    rightmost.closed = TRUE
+                ),
+                qpr = factor(qpr)
+            )
+        x
+    }) %>% 
+    
+    mcols %>% 
+    as.data.frame %>% 
+    
+    mutate(
+        gb = log10(gb), 
+        pr = log10(pr),
+        flabel = "Expression-filtered genes"
+    ) %>% 
+    
+    ggplot(
+        aes(qpr, gb)
+    ) +
+    facet_grid(~flabel) +
+    
+    geom_violin() +
+    geom_boxplot(
+        width = 0.3
+    ) +
+    geom_point(
+        size = 0.5,
+        shape = 16,
+        alpha = 0.5,
+        position = position_jitter(width = 0.1)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = "Pause region quartile",
+        y = "Early gene body (DMSO)\n(log10 RRPM per kb)"
+    ) +
+    theme_md_classic() +
+    theme() -> S4D
+S4D
+```
+
+\ 
+
+## E Gene body (NELF vs. LacZ (DMSO)) vs. (NELF vs. LacZ (FP))
+
+Want to show the relationship between the change following NELF RNAi 
+(so NELF DMSO vs. LacZ DMSO) and compare that to how the early gene body 
+responds following FP in NELF RNAi cells.
+
+\ 
+
+### OBJECT
+
+Object made in S3E.
+
+\ 
+
+### The plot
+
+```{r}
+dsres_ne_vs_lz_fp_dmso_pr_gb %>% 
+    subset(region == "gb") %>% 
+    split(., .$drug) %>% 
+    lapply(. %>% .$log2FoldChange) %>% 
+    as.data.frame %>% 
+    
+    ggplot(
+        aes(DMSO, FP)
+    ) +
+    geom_hex(
+        binwidth = c(0.1, 0.1)
+    ) +
+    geom_hline(
+        yintercept = 0,
+        size = 0.25,
+        linetype = "dashed"
+    ) +
+    geom_vline(
+        xintercept = 0,
+        size = 0.25,
+        linetype = "dashed"
+    ) +
+    stat_cor(
+        aes(label = ..rr.label..), 
+        r.digits = 2
+    ) +
+    
+    scale_fill_viridis(
+        trans = "log2",
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            title.position = "top",
+            barwidth = 0.7,
+            barheight = 3.5,
+            draw.ulim = FALSE
+        )
+    ) +
+    labs(
+        x = "log2 (NELF+DMSO / LacZ+DMSO)\n300-1300 bp from TSS",
+        y = "log2 (NELF+FP / LacZ+FP)\n300-1300 bp from TSS",
+        fill = "genes"
+    ) +
+    coord_equal(
+        ratio = 1
+    ) +
+    theme_md_classic() -> S4E
+S4E
+```
+
+\ 
+
+## F Pause region (NELF vs. LacZ (DMSO)) vs. Gene body (NELF vs. LacZ (FP))
+
+Continuing the idea in S4E, this plot is looking at the same early gene body
+phenotype (NELF+FP vs. LacZ+FP), but see how that relates to how pause regions
+responded to NELF RNAi (NELF+DMSO vs. LacZ+DMSO in pause regions)
+
+\ 
+
+### OBJECT
+
+Object made in S3E
+
+\ 
+
+### The plot
+
+```{r}
+dsres_ne_vs_lz_fp_dmso_pr_gb %>% 
+    subset(KD == "NELF RNAi") %>% 
+    split(., list(.$drug, .$region)) %>% 
+    lapply(. %>% .$log2FoldChange) %>% 
+    as.data.frame %>% 
+    
+    ggplot(
+        aes(DMSO.pr, FP.gb)
+    ) +
+    geom_hex(
+        binwidth = c(0.1, 0.1)
+    ) +
+    geom_hline(
+        yintercept = 0,
+        size = 0.25,
+        linetype = "dashed"
+    ) +
+    geom_vline(
+        xintercept = 0,
+        size = 0.25,
+        linetype = "dashed"
+    ) +
+    stat_cor(
+        aes(label = ..rr.label..), 
+        r.digits = 2
+    ) +
+    
+    scale_fill_viridis(
+        trans = "log2",
+        guide = guide_colorbar(
+            ticks.colour = "white",
+            ticks.linewidth = 1.5,
+            title.position = "top",
+            barwidth = 0.7,
+            barheight = 3.5,
+            draw.ulim = FALSE
+        )
+    ) +
+    labs(
+        x = "log2 (NELF+DMSO / LacZ+DMSO)\n0-100 bp from TSS",
+        y = "log2 (NELF+FP / LacZ+FP)\n300-1300 bp from TSS",
+        fill = "genes"
+    ) +
+    coord_equal(
+        ratio = 1
+    ) +
+    theme_md_classic() -> S4F
+S4F
+```
+
+\ 
+
+# Figure 4
+
+The Flavopiridol time-course.
+
+Premature gene body entry of Pol II in the absence of NELF and Cdk9 activity is 
+restricted to the first several kilobases
+
+\ 
+
+## A (Diagram)
+
+\ 
+
+## B (Hypothesis illustration)
+
+\ 
+
+## C Browser shot (cv-c)
+
+```{r}
+name_i <- "cv-c" 
+region <- genebodies(subset(txs.f_match, symbol == name_i), -500, 5e3)
+
+applyNFsGRanges(PROseq.b2, readcounts.b2_alt$NF) %>% 
+    lapply(subsetByOverlaps, region) %>%
+    split(., sub("_rep.", "", names(.))) %>% 
+    mclapply(mergeGRangesData, ncores = 1) %>% 
+    lapply(function(x) {
+        score(x) <- score(x) / 2
+        x
+    }) %>% 
+    (function(x) {
+        names(x) %>% 
+            sub("KD_", " ", .) %>% 
+            sub("NELFe", "NELF", .) %>% 
+            sub("FP_05min", "5' FP", .) %>% 
+            sub("FP_10min", "10' FP", .) %>% 
+            sub("FP_20min", "20' FP", .) %>% 
+            setNames(x, .)
+    }) %>% 
+    plot_shot(
+        region = region,
+        binsize = width(region) / 200, 
+        bin_FUN = . %>% mean %>% "*"(1e3),
+        ylim = if (as.character(strand(region)) == "+") c(0, 25) else c(-25, 0),
+        annotations = txdb,
+        gene_names = txs.f_match$symbol,
+        expand_ranges = FALSE,
+        ncores = 1
+    ) -> fig4c
+fig4c
+```
+
+\ 
+
+## D Browser shot (Lrch)
+
+```{r}
+name_i <- "Lrch" 
+region <- genebodies(subset(txs.f_match, symbol == name_i), -500, 3e3)
+
+applyNFsGRanges(PROseq.b2, readcounts.b2_alt$NF) %>% 
+    lapply(subsetByOverlaps, region) %>%
+    split(., sub("_rep.", "", names(.))) %>% 
+    mclapply(mergeGRangesData) %>% 
+    lapply(function(x) {
+        score(x) <- score(x) / 2
+        x
+    }) %>% 
+    (function(x) {
+        names(x) %>% 
+            sub("KD_", " ", .) %>% 
+            sub("NELFe", "NELF", .) %>% 
+            sub("FP_05min", "5' FP", .) %>% 
+            sub("FP_10min", "10' FP", .) %>% 
+            sub("FP_20min", "20' FP", .) %>% 
+            setNames(x, .)
+    }) %>% 
+    plot_shot(
+        region = region,
+        binsize = width(region) / 200, 
+        bin_FUN = . %>% mean %>% "*"(1e3),
+        ylim = if (as.character(strand(region)) == "+") c(0, 50) else c(-50, 0),
+        annotations = txdb,
+        gene_names = txs.f_match$symbol,
+        expand_ranges = FALSE,
+        ncores = 1
+    ) -> fig4d
+fig4d
+```
+
+\ 
+
+## E-F Metaplot LFC vs. DMSO (LacZ & NELF)
+
+```{r}
+# n = 39
+binsize <- 1e3
+subset(txs.f_match, width >= 5.5e4) %>% 
+    promoters(0.5*binsize, 5e4 + 0.5*binsize) %>% 
+    getCountsByPositions(
+        PROseq.b2, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b2_alt$NF
+    ) %>% 
+    
+    # split by replicates, and for each KD get LFC vs. DMSO in each rep
+    split(., sub(".*rep", "rep", names(.))) %>% 
+    lapply({
+        . %>% 
+            split(., sub("KD.*", "", names(.))) %>%
+            lapply(function(x) lapply(x[-1], "/", x[[1]])) %>% 
+            setNames(NULL) %>% 
+            unlist(recursive = FALSE) %>% 
+            lapply(log2) %>% 
+            lapply(function(x) {
+                x[!is.finite(x)] <- NA
+                x
+            })
+    }) %>% 
+    setNames(NULL) %>% 
+    unlist(recursive = FALSE) %>% 
+    
+    # get avg LFC for reps (I have to decide which way I'm doing this...)
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(. %>% do.call("+", .) %>% "/"(2)) %>% 
+    
+    # bootstrap means
+    mcMap(
+        metaSubsampleMatrix, 
+        ., 
+        sample.name = names(.),
+        lower = 0.25, 
+        upper = 0.75
+    ) %>% 
+    do.call(rbind, .) %>% 
+    mutate(
+        KD = sapply(
+            sub("KD.*", "", sample.name), 
+            switch, 
+            LacZ = "LacZ\nRNAi", 
+            NELFe = "NELF\nRNAi"
+        ),
+        rep = sub(".*rep", "rep", sample.name),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample.name), 
+            switch,
+            "DMSO" = "DMSO",
+            "FP_05min" = "5' FP", 
+            "FP_10min" = "10' FP", 
+            "FP_20min" = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c(
+                "DMSO", 
+                "5' FP", 
+                "10' FP", 
+                "20' FP"
+            )
+        ),
+        x = binsize*x - binsize,
+        colname = "blank" # adding this in just as a spacer
+    ) %>%  
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    facet_rep_grid(
+        KD~colname, 
+        repeat.tick.labels = TRUE
+    ) +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed", 
+        size = 0.25
+    ) +
+    geom_line(
+        aes(color = drug), 
+        alpha = 0.7
+    ) +
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = drug),
+        color = NA, 
+        alpha = 0.2
+    ) +
+    
+    scale_color_manual(
+        values = fptc_colors[2:4]
+    ) +
+    scale_fill_manual(
+        values = fptc_colors[2:4]
+    ) +
+    scale_x_continuous(
+        limits = c(0, 5e4), 
+        labels = function(x) paste0(x / 1e3, "\n\n\n\n\n"),
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        expand = FALSE
+    ) +
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "log2(FP / DMSO)",
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "top",
+        strip.text.y = element_text(angle = 0)
+    ) -> fig4ef
+fig4ef
+```
+
+\ 
+
+## G Metaplot gene body signal
+
+```{r}
+binsize <- 100
+txs.f_match.long %>% 
+    promoters(
+        0.5*binsize, 
+        6e3 + 0.5*binsize
+    ) %>% 
+    
+    getCountsByPositions(
+        PROseq.b2, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b2_alt$NF
+    ) %>% 
+    
+    # combine reps and average
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(. %>% do.call("+", .)) %>% 
+    lapply("/", 2) %>% 
+    
+    # adjust for binsize, and make per kb
+    lapply("/", binsize) %>% 
+    lapply("*", 1e3) %>% 
+
+    mcMap(
+        metaSubsampleMatrix, 
+        ., 
+        sample.name = names(.),
+        lower = 0.25, 
+        upper = 0.75
+    ) %>% 
+    
+    do.call(rbind, .) %>% 
+    mutate(
+        rep = sub(".*rep", "rep", sample.name),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample.name), 
+            switch,
+            DMSO = "DMSO", 
+            FP_05min = "5' FP", 
+            FP_10min = "10' FP",
+            FP_20min = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c(
+                "DMSO", 
+                "5' FP", 
+                "10' FP", 
+                "20' FP"
+            )
+        ),
+        KD = sapply(
+            sub("(.*KD).*", "\\1", sample.name), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            KD, 
+            levels = c("LacZ", "NELF")
+        )
+    ) %>% 
+    
+    # aesthetic: avoid the meaningless "vertical line" in the first bin
+    subset(x > 1) %>% 
+
+    mutate(
+        x = x*binsize - binsize
+    ) %>% 
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    facet_rep_grid(~drug) +
+    
+    geom_line(
+        aes(color = KD), 
+        alpha = 0.7
+    ) +
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = KD),
+        color = NA, 
+        alpha = 0.2
+    ) +
+    
+    scale_color_manual(
+        values = KD_colors[1:2],
+        aesthetics = c("color", "fill")
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 10)
+    ) +
+    scale_x_continuous(
+        limits = c(0, 6e3), 
+        expand = c(0, 0),
+        labels = function(x) x / 1e3
+    ) +
+    
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "PRO-seq\n(RRPM per kb)",
+        fill = "RNAi", color = "RNAi"
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none"
+    ) -> fig4g
+fig4g
+```
+
+\ 
+
+## H Metaplot gene body LFC NELF vs. LacZ
+
+```{r}
+binsize <- 200
+txs.f_match %>% 
+    subset(width > 1.6e4) %>% 
+    promoters(
+        0.5*binsize, 
+        1.5e4 + 0.5*binsize
+    ) %>% 
+    getCountsByPositions(
+        PROseq.b2, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b2_alt$NF
+    ) %>% 
+    # average replicates
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(function(x) (x[[1]] + x[[2]]) / 2) %>% 
+    
+    # split by drug and get lfc vs. lacZ
+    split(., sub(".*KD_", "", names(.))) %>% 
+    lapply(function(x) log2( x[[2]] / x[[1]] )) %>% 
+    lapply(function(x) {
+        x[!is.finite(x)] <- NA
+        x
+    }) %>% 
+    
+    # bootstrap means
+    mcMap(
+        metaSubsampleMatrix, 
+        ., 
+        sample.name = names(.),
+        lower = 0.25, 
+        upper = 0.75
+    ) %>% 
+    do.call(rbind, .) %>% 
+    mutate(
+        drug = sapply(
+            as.character(sample.name), 
+            switch,
+            "DMSO" = "DMSO",
+            "FP_05min" = "5' FP", 
+            "FP_10min" = "10' FP", 
+            "FP_20min" = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c(
+                "DMSO", 
+                "5' FP", 
+                "10' FP", 
+                "20' FP"
+            )
+        ),
+        x = binsize*x - binsize
+    ) %>% 
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    facet_rep_grid(
+        ~drug
+    ) +
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed", 
+        size = 0.25
+    ) +
+    geom_line(
+        aes(color = drug)
+    ) +
+    geom_ribbon(
+        aes(
+            ymin = lower, 
+            ymax = upper, 
+            fill = drug, 
+            color = NULL
+        ),
+        alpha = 0.2
+    ) +
+    
+    scale_color_manual(
+        values = sapply(
+            fptc_colors, 
+            adjustcolor, 
+            0.7, 
+            USE.NAMES = FALSE
+        )
+    ) +
+    scale_fill_manual(
+        values = fptc_colors
+    ) +
+    scale_x_continuous(
+        limits = c(0, 1.5e4), 
+        labels = function(x) x / 1e3, 
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(-1.5, 1.5)
+    ) +
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "log2 (NELF / LacZ)",
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_classic() +
+    theme(
+        strip.text.y = element_text(angle = 0),
+        legend.position = "none"
+    ) -> fig4h
+fig4h
+```
+
+\ 
+
+# Supplementary Figure 5
+
+\ 
+
+## (A Western)
+
+\ 
+
+## B Total PRO-seq, spike-in-only normalized
+
+```{r}
+readcounts.b2 %>% 
+    mutate(
+        norm_counts = exp_reads * NF
+    ) %>%
+    split(., sub(".*_rep", "rep", .$sample)) %>%
+    lapply(
+        transmute, 
+        sample = sample, 
+        ratio = norm_counts / norm_counts[1]
+    ) %>%
+    do.call(rbind, .) %>%
+    
+    mutate(
+        rep = sub(".*_rep", "rep", sample),
+        KD = sapply(
+            sub("KD.*", "", sample), 
+            switch,
+            LacZ = "LacZ RNAi",
+            NELFe = "NELF RNAi"
+        ),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample), 
+            switch, 
+            DMSO = "DMSO", 
+            FP_05min = "5' FP",
+            FP_10min = "10' FP", 
+            FP_20min = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c("DMSO", "5' FP", "10' FP", "20' FP")
+        )
+    ) %>%
+    
+    ggplot(
+        aes(drug, ratio, fill = rep)
+    ) + 
+    
+    facet_grid(~KD) + 
+    geom_bar(
+        stat = "identity", 
+        position = "dodge", 
+        width = 0.7
+    ) +
+    
+    scale_fill_manual(
+        values = c("gray25", "gray75")
+    ) +
+    scale_y_continuous(
+        labels = . %>% scales::percent(accuracy = 1),
+        limits = c(0, 1), 
+        expand = c(0, 0)
+    ) +
+    
+    labs(
+        x = NULL, 
+        y = "Relative PRO-seq",
+        title = "Spike-in normalized PRO-seq",
+        fill = NULL
+    ) +
+    
+    theme_md_classic() +
+    theme(
+        strip.text = element_text(size = 10),
+        strip.placement = "outside",
+        axis.text.x = element_text(angle = 30, hjust = 1),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        legend.position = "bottom"
+    ) -> S5B
+S5B
+```
+
+\ 
+
+## C Total PRO-seq, spike-in+LGE normalized
+
+```{r}
+readcounts.b2_alt %>% 
+    mutate(
+        norm_counts = exp_reads * NF
+    ) %>%
+    split(., sub(".*_rep", "rep", .$sample)) %>%
+    lapply(
+        transmute, 
+        sample = sample, 
+        ratio = norm_counts / norm_counts[1]
+    ) %>%
+    do.call(rbind, .) %>%
+    
+    mutate(
+        rep = sub(".*_rep", "rep", sample),
+        KD = sapply(
+            sub("KD.*", "", sample), 
+            switch,
+            LacZ = "LacZ RNAi",
+            NELFe = "NELF RNAi"
+        ),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample), 
+            switch, 
+            DMSO = "DMSO", 
+            FP_05min = "5' FP",
+            FP_10min = "10' FP", 
+            FP_20min = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c("DMSO", "5' FP", "10' FP", "20' FP")
+        )
+    ) %>%
+    
+    ggplot(
+        aes(drug, ratio, fill = rep)
+    ) + 
+    
+    facet_grid(~KD) + 
+    geom_bar(
+        stat = "identity", 
+        position = "dodge", 
+        width = 0.7
+    ) +
+    
+    scale_fill_manual(
+        values = c("gray25", "gray75")
+    ) +
+    scale_y_continuous(
+        labels = . %>% scales::percent(accuracy = 1),
+        limits = c(0, 1), 
+        expand = c(0, 0)
+    ) +
+    
+    labs(
+        x = NULL, 
+        y = "Relative PRO-seq",
+        title = "Spike-in + LGE normalized PRO-seq",
+        fill = NULL
+    ) +
+    
+    theme_md_classic() +
+    theme(
+        strip.text = element_text(size = 10),
+        strip.placement = "outside",
+        axis.text.x = element_text(angle = 30, hjust = 1),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        legend.position = "bottom"
+    ) -> S5C
+S5C
+```
+
+\ 
+
+## D PRO-seq (time-course) replicate correlations
+
+\ 
+
+### Top: gene body regions
+
+```{r}
+getCountsByRegions(
+    PROseq.b2, 
+    txs.gb, 
+    NF = readcounts.b2_alt$NF
+) %>%
+    lapply(log10) %>%
+    split(., sub("_rep.", "", names(.))) %>%
+    lapply(as.data.frame) %>%
+    lapply(setNames, c("rep1", "rep2")) %>%
+    dfList2df %>%
+    mutate(
+        KD = sapply(
+            sub("KD.*", "", sample), 
+            switch,
+            LacZ = "LacZ\nRNAi", 
+            NELFe = "NELF\nRNAi"
+        ),
+        KD = factor(
+            KD, 
+            levels = c("LacZ\nRNAi", "NELF\nRNAi")
+        ),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample), 
+            switch, 
+            DMSO = "DMSO", 
+            FP_05min = "5' FP",
+            FP_10min = "10' FP", 
+            FP_20min = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c("DMSO", "5' FP", "10' FP", "20' FP")
+        )
+    ) %>%
+    subset(
+        is.finite(rep1) & is.finite(rep2)
+    ) %>%
+    
+    ggplot(
+        aes(rep1, rep2)
+    ) +
+    facet_grid(
+        KD~drug
+    ) +
+    
+    geom_hex() +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed"
+    ) +
+    stat_cor(
+        aes(label = ..r.label..), 
+        method = "spearman", 
+        cor.coef.name = "rho", 
+        r.digits = 2
+    ) +
+    
+    scale_fill_viridis(
+        guide = guide_colorbar(
+            ticks.linewidth = 1.5,
+            ticks.colour = "white",
+            title.position = "top",
+            title.hjust = 0.5,
+            draw.ulim = FALSE, 
+            draw.llim = TRUE,
+            barheight = 0.7
+        ),
+        trans = "log2",
+        labels = . %>% scales::comma(accuracy = 1),
+        limits = c(1, 512), 
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    
+    labs(
+        x = "Rep 1 (log10 RRPM)", 
+        y = "Rep 2 (log10 RRPM)",
+        title = "PRO-seq gene body replicate correlations",
+        fill = "genes"
+    ) +
+    theme_md_bw() +
+    theme(
+        aspect.ratio = 1,
+        strip.text.y = element_text(angle = 0),
+        legend.position = "bottom"
+    ) -> S5D_top
+S5D_top
+```
+
+\ 
+
+### Bottom: pause regions
+
+```{r}
+getCountsByRegions(
+    PROseq.b2, 
+    txs.5p_pp, 
+    NF = readcounts.b2_alt$NF
+) %>%
+    lapply(log10) %>%
+    split(., sub("_rep.", "", names(.))) %>%
+    lapply(as.data.frame) %>%
+    lapply(setNames, c("rep1", "rep2")) %>%
+    dfList2df %>%
+    mutate(
+        KD = sapply(
+            sub("KD.*", "", sample), 
+            switch,
+            LacZ = "LacZ\nRNAi", 
+            NELFe = "NELF\nRNAi"
+        ),
+        KD = factor(
+            KD, 
+            levels = c("LacZ\nRNAi", "NELF\nRNAi")
+        ),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample), 
+            switch, 
+            DMSO = "DMSO", 
+            FP_05min = "5' FP",
+            FP_10min = "10' FP", 
+            FP_20min = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c("DMSO", "5' FP", "10' FP", "20' FP")
+        )
+    ) %>%
+    subset(
+        is.finite(rep1) & is.finite(rep2)
+    ) %>%
+    
+    ggplot(
+        aes(rep1, rep2)
+    ) +
+    facet_grid(
+        KD~drug
+    ) +
+    
+    geom_hex() +
+    geom_abline(
+        slope = 1, 
+        intercept = 0, 
+        linetype = "dashed"
+    ) +
+    stat_cor(
+        aes(label = ..r.label..), 
+        method = "spearman", 
+        cor.coef.name = "rho", 
+        r.digits = 2
+    ) +
+    
+    scale_fill_viridis(
+        guide = guide_colorbar(
+            ticks.linewidth = 1.5,
+            ticks.colour = "white",
+            title.position = "top",
+            title.hjust = 0.5,
+            draw.ulim = FALSE, 
+            draw.llim = TRUE,
+            barheight = 0.7
+        ),
+        trans = "log2",
+        labels = . %>% scales::comma(accuracy = 1),
+        limits = c(1, 512), 
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    
+    labs(
+        x = "Rep 1 (log10 RRPM)", 
+        y = "Rep 2 (log10 RRPM)",
+        title = "PRO-seq pause region replicate correlations",
+        fill = "genes"
+    ) +
+    theme_md_bw() +
+    theme(
+        aspect.ratio = 1,
+        strip.text.y = element_text(angle = 0),
+        legend.position = "bottom"
+    ) -> S5D_bottom
+S5D_bottom
+```
+
+\ 
+
+## E GB metaplot, each rep
+
+Matching Figure 4g, but plotting each replicate separately.
+
+```{r}
+binsize <- 100
+
+txs.f_match.long %>% 
+    promoters(
+        0.5*binsize, 
+        6e3 + 0.5*binsize
+    ) %>% 
+    
+    getCountsByPositions(
+        PROseq.b2, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b2_alt$NF
+    ) %>% 
+    
+    # adjust for binsize, and make per kb
+    lapply("/", binsize) %>% 
+    lapply("*", 1e3) %>% 
+    
+    mcMap(
+        metaSubsampleMatrix, 
+        .,  
+        sample.name = names(.),
+        lower = 0.25, 
+        upper = 0.75
+    ) %>%  
+    do.call(rbind, .) %>% 
+    
+    mutate(
+        rep = sub(".*rep", "rep", sample.name),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample.name), 
+            switch,
+            DMSO = "DMSO", 
+            FP_05min = "5' FP", 
+            FP_10min = "10' FP",
+            FP_20min = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c("DMSO", "5' FP", "10' FP", "20' FP")
+        ),
+        KD = sapply(
+            sub("(.*KD).*", "\\1", sample.name), 
+            switch, 
+            LacZKD = "LacZ", 
+            NELFeKD = "NELF"
+        ),
+        KD = factor(
+            paste(KD, "RNAi"), 
+            levels = c("LacZ RNAi", "NELF RNAi")
+        ),
+        x = x*binsize - binsize
+    ) %>% 
+    
+    # aesthetic: avoid the meaningless "vertical line" in the first bin
+    subset(x > 1) %>% 
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    facet_grid(
+        rep~drug
+    ) +
+    geom_line(
+        aes(color = KD), 
+        alpha = 0.7,
+        size = 0.25
+    ) +
+    
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = KD),
+        color = NA, 
+        alpha = 0.2
+    ) +
+    
+    scale_color_manual(
+        values = KD_colors[1:2],
+        aesthetics = c("color", "fill")
+    ) +
+    scale_x_continuous(
+        limits = c(0, 6e3), 
+        expand = c(0, 0),
+        labels = function(x) x / 1e3
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(0, 10)
+    ) +
+    
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "PRO-seq\n(RRPM per kb)",
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_bw() +
+    theme(
+        legend.position = "top",
+        strip.text.y = element_text(angle = 0),
+        panel.grid = element_blank()
+    ) -> S5E
+S5E
+```
+
+\ 
+
+## F Metaplot gene body LFC FP/DMSO for each replicate
+
+```{r}
+# n = 39
+binsize <- 1e3
+subset(txs.f_match, width >= 5.5e4) %>% 
+    promoters(
+        0.5*binsize, 
+        5e4 + 0.5*binsize
+    ) %>% 
+    
+    getCountsByPositions(
+        PROseq.b2, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b2_alt$NF
+    ) %>% 
+    
+    # split by replicates, and for each KD get LFC vs. DMSO in each rep
+    split(., sub(".*rep", "rep", names(.))) %>% 
+    lapply({
+        . %>% 
+            split(., sub("KD.*", "", names(.))) %>%
+            lapply(function(x) lapply(x[-1], "/", x[[1]])) %>% 
+            setNames(NULL) %>% 
+            unlist(recursive = FALSE) %>% 
+            lapply(log2) %>% 
+            lapply(function(x) {
+                x[!is.finite(x)] <- NA
+                x
+            })
+    }) %>% 
+    setNames(NULL) %>% 
+    unlist(recursive = FALSE) %>% 
+    
+    # bootstrap means
+    mcMap(
+        metaSubsampleMatrix, 
+        ., 
+        sample.name = names(.),
+        lower = 0.25, 
+        upper = 0.75
+    ) %>% 
+    do.call(rbind, .) %>% 
+    
+    mutate(
+        KD = sapply(
+            sub("KD.*", "", sample.name), 
+            switch, 
+            LacZ = "LacZ RNAi", 
+            NELFe = "NELF RNAi"
+        ),
+        rep = sub(".*rep", "rep", sample.name),
+        drug = sapply(
+            sub(".*(DMSO|FP_..min).*", "\\1", sample.name), 
+            switch,
+            "DMSO" = "DMSO",
+            "FP_05min" = "5' FP", 
+            "FP_10min" = "10' FP", 
+            "FP_20min" = "20' FP"
+        ),
+        drug = factor(
+            drug, 
+            levels = c("DMSO", "5' FP", "10' FP", "20' FP")
+        ),
+        x = binsize*x - binsize
+    ) %>% 
+    
+    ggplot(
+        aes(x, mean)
+    ) +
+    facet_grid(
+        rep~KD
+    ) +
+    
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed",
+        size = 0.25
+    ) +
+    geom_line(
+        aes(color = drug), 
+        alpha = 0.7,
+        size = 0.25
+    ) +
+    geom_ribbon(
+        aes(ymin = lower, ymax = upper, fill = drug),
+        color = NA, 
+        alpha = 0.2
+    ) +
+    
+    scale_color_manual(
+        values = fptc_colors[2:4],
+        aesthetics = c("color", "fill")
+    ) +
+    scale_x_continuous(
+        limits = c(0, 5e4), 
+        labels = function(x) x / 1e3, 
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        expand = FALSE
+    ) +
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "log2( FP / DMSO )",
+        fill = NULL, 
+        color = NULL
+    ) +
+    theme_md_bw() +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = "top",
+        strip.text.y = element_text(angle = 0)
+    ) -> S5F
+S5F
+```
+
+\ 
+
+# Figure 5
+
+Comparing FP time-course response in NELF-depleted Drosophila to that in 
+NELF-lacking S. pombe.
+
+Data and annotations in this section are from Booth et al. 2018 ("Cdk9 regulates 
+a promoter-proximal checkpoint to modulate RNA Polymerase II elongation rate in 
+fission yeast"), PMID: 29416031.
+
+By default, all code chunks in this section are set to `eval=FALSE` so that
+the entire notebook can be run without having to download the S. pombe data
+(and without generating Figure 5).
+
+\ 
+
+## Import S. pombe PRO-seq data and annotations
+
+Both are from 
+
+```{r}
+dataImport.spomProseq()
+dataImport.spom_txs_filt()
+```
+
+\ 
+
+## Top: S pombe metagene profile
+
+**Important note:**
+
+For the comparative metagene profile, making the Drosophila and S. pombe data 
+align was frustrating, given the different scales being used (and wanting to set 
+them as constant within each organism), and the fact that with patchwork just 
+assembling the whole thing, they-axis labels were different sizes making the 
+plots not line up perfectly (due to negative signs in the Drosophila y-axis 
+labels).
+
+So below, I added negative signs to the S. pombe plot, and edited these out in 
+Adobe Illustrator.
+
+```{r}
+binsize <- 200L
+
+spomPROseq.b2_combined %>% 
+    metaSubsample(
+        {
+            spom_txs_filt %>% 
+                subset(width > 6e3) %>% # n=42
+                promoters(0.5*binsize, 6e3 + 0.5 * binsize)
+        }, 
+        binsize = binsize,
+        first.output.xval = -0.5*binsize,
+        lower = 0.25,
+        upper = 0.75
+    ) %>% 
+
+    split(., .$sample.name) %>% 
+    
+    (function(x) {
+        df_00min <- x[[1]]
+        lapply(x[-1], function(df) {
+            df_ctrl <- df_00min
+            df_ctrl$sample.name = df$sample.name
+            df$cond <- "Cdk9 Inhibition" # treated with 3M-MB-PP1 
+            df_ctrl$cond <- "Control" # treated with DMSO
+            rbind(df, df_ctrl, make.row.names = FALSE)
+        })
+    }) %>% 
+    
+    unname %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    mutate(
+        sample.name = sub("CDK9as_", "", sample.name),
+        x = (x + 0.5) / 1e3, # kb,
+        sample.name = sapply(
+            sample.name, switch,
+            "00min30sec" = "0.5'",
+            "01min" = "1'",
+            "02min30sec" = "2.5'",
+            "05min" = "5'",
+            "07min30sec" = "7.5'",
+            "10min" = "10'",
+            "20min" = "20'"
+        ),
+        sample.name = factor(
+            sample.name,
+            levels = c("0.5'", "1'", "2.5'", "5'", "7.5'", "10'", "20'")
+        ),
+        cond = factor(cond, levels = rev(unique(cond)))
+    ) %>% 
+    
+    ggplot() +
+    facet_rep_grid(
+        ~sample.name
+    ) +
+    
+    geom_ribbon(
+        aes(x, ymin = lower, ymax = upper, fill = cond),
+        color = NA,
+        alpha = 0.2
+    ) + 
+    geom_line(
+        aes(x, mean, color = cond)
+    ) +
+    
+    coord_cartesian(
+        ylim = c(0, 3),
+        clip = "off",
+        expand = FALSE
+    ) +
+    scale_x_continuous(
+        limits = c(0, 6)
+    ) +
+    
+    scale_y_continuous(
+        labels = . %>% paste0("-", ., ".0")
+    ) +
+
+    scale_color_manual(
+        values = change_colors[-2],
+        aesthetics = c("color", "fill")
+    ) +
+    
+    labs(
+        x = "Distance from TSS (kb)",
+        y = "S. pombe\nNormalized PRO-seq",
+        color = NULL, fill = NULL
+    ) + 
+    
+    theme_md_classic() +
+    theme(
+        legend.position = "top"
+    ) -> fig5_top
+fig5_top
+```
+
+\ 
+
+## Bottom: Drosophila metagene profile
+
+```{r}
+binsize <- 200L
+txs.f_match %>% 
+    subset(width > 6.3e3) %>% 
+    promoters(0.5*binsize, 6e3 + 0.5*binsize) %>% 
+    getCountsByPositions(
+        PROseq.b2, 
+        ., 
+        binsize = binsize, 
+        NF = readcounts.b2_alt$NF
+    ) %>% 
+    # average replicates
+    split(., sub("_rep.", "", names(.))) %>% 
+    lapply(function(x) (x[[1]] + x[[2]]) / 2) %>% 
+    
+    # split by drug and get lfc vs. lacZ
+    split(., sub(".*KD_", "", names(.))) %>% 
+    lapply(function(x) log2( x[[2]] / x[[1]] )) %>% 
+    lapply(function(x) {
+        x[!is.finite(x)] <- NA
+        x
+    }) %>% 
+    
+    # bootstrap means
+    mcMap(
+        metaSubsampleMatrix, 
+        ., 
+        sample.name = names(.)
+    ) %>% 
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    split(., .$sample.name) %>% 
+    (function(x) {
+        df_00min <- x[[1]]
+        lapply(x[-1], function(df) {
+            df_ctrl <- df_00min
+            df_ctrl$sample.name = df$sample.name
+            df$cond <- "Cdk9 Inhibition"
+            df_ctrl$cond <- "Control"
+            rbind(df, df_ctrl, make.row.names = FALSE)
+        })
+    }) %>%
+    
+    c(make.row.names = FALSE) %>% 
+    do.call(rbind, .) %>% 
+    
+    mutate(
+        sample.name = sapply(
+            sample.name, switch,
+            "FP_05min" = "5'", 
+            "FP_10min" = "10'", 
+            "FP_20min" = "20'"
+        ),
+        sample.name = factor(
+            sample.name, 
+            levels = c("0.5'", "1'", "2.5'", "5'", "7.5'", "10'", "20'")
+        ),
+        cond = factor(
+            cond, 
+            levels = rev(unique(cond))
+        ),
+        x = binsize*x - binsize
+    ) %>% 
+    
+    ggplot() +
+    facet_rep_grid(
+      ~sample.name,
+      drop = FALSE
+    ) +
+    
+    geom_hline(
+        yintercept = 0, 
+        linetype = "dashed", 
+        size = 0.25
+    ) +
+    geom_ribbon(
+        aes(x, ymin = lower, ymax = upper, fill = cond),
+        color = NA,
+        alpha = 0.2
+    ) +
+    geom_line(
+        aes(x, mean, color = cond)
+    ) +
+    
+   scale_color_manual(
+        values = change_colors[-2],
+        aesthetics = c("color", "fill")
+    ) +
+    
+    scale_x_continuous(
+        limits = c(0, 6e3), 
+        labels = function(x) x / 1e3, 
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        expand = FALSE, 
+        ylim = c(-1.5, 1.5),
+        clip = "off"
+    ) +
+    labs(
+        x = "Distance from TSS (kb)", 
+        y = "Drosophila S2 Cells\nlog2 (NELF / LacZ RNAi)",
+        fill = NULL, color = NULL
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "top"
+    ) -> fig5_bottom
+fig5_bottom
+```
+
+\ 
+
+## Assemble plots
+
+```{r}
+{
+  fig5_top / fig5_bottom
+} + plot_layout(guides = "collect") &
+  theme(
+    legend.position = "top"
+  )
+```
+
+\ 
+
+# Figure 6
+
+## Imaging data overview
+
+```{r}
+names(Imaging_Rpb9PA)
+```
+
+```{r}
+subset(Imaging_Rpb9PA, time == 0) %>% 
+    .$condition %>% 
+    table
+```
+
+```{r}
+Imaging_MCPGFP_intensity %>% 
+    .$condition %>% 
+    table
+```
+
+\ 
+
+## (A: schematic)
+
+\ 
+
+## (B: example images)
+
+\ 
+
+## C Boxplot Rpb9-paGFP fluorescence intensity
+
+```{r}
+Imaging_Rpb9PA %>% 
+    subset(time == 0) %>% 
+    
+    mutate(
+        condition = sub(" ", "\n", condition)
+    ) %>% 
+    
+    ggplot(
+        aes(drug, bleaching_corrected, color = kd)
+    ) +
+    facet_wrap(~kd, strip.position = "bottom") +
+    
+    geom_boxplot(
+        outlier.alpha = 0
+    ) + 
+    geom_point(
+        position = position_jitter(width = 0.1),
+        shape = 16,
+        alpha = 0.7
+    ) +
+    
+    scale_color_manual(
+        values = pseudotrans_rgb(KD_colors, 0.7)[1:2]
+    ) +
+    scale_y_continuous(
+        limits = c(0, 6e4),
+        expand = c(0, 0),
+        labels = . %>% "/"(1e4)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = NULL,
+        y = "PA-GFP Fluorescence @ t = 0 (AU)"
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none",
+        axis.ticks.x = element_blank(),
+        strip.placement = "outside"
+    ) -> fig6c
+fig6c
+```
+
+\ 
+
+## D Boxplot MCP-GFP fluorescence intensity
+
+```{r}
+Imaging_MCPGFP_intensity %>% 
+    
+    mutate(
+        condition = sub(" ", "\n", condition)
+    ) %>% 
+    
+    ggplot(
+        aes(drug, MCPGFP_vs_background, color = kd)
+    ) +
+    facet_wrap(~kd, strip.position = "bottom") +
+    
+    geom_boxplot(
+        outlier.alpha = 0
+    ) + 
+    geom_point(
+        position = position_jitter(width = 0.1),
+        shape = 16,
+        alpha = 0.7
+    ) +
+    
+    scale_color_manual(
+        values = pseudotrans_rgb(KD_colors, 0.7)[1:2]
+    ) +
+    scale_y_continuous(
+        limits = c(0, 10),
+        expand = c(0, 0)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = NULL,
+        y = "MCP-GFP Fluorescence (AU)"
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none",
+        axis.ticks.x = element_blank(),
+        strip.placement = "outside"
+    ) -> fig6d
+fig6d
+```
+
+\ 
+
+## E Lineplot absolute Rpb9-paGFP signal
+
+mean±sem
+
+```{r}
+Imaging_Rpb9PA %>% 
+    
+    mutate(
+        bleaching_corrected = bleaching_corrected / 1e4
+    ) %>% 
+    
+    aggregate(
+        bleaching_corrected ~ condition*time,
+        .,
+        function(x) c(
+            mean = mean(x), 
+            lower = mean(x) - (sd(x) / sqrt(length(x))),
+            upper = mean(x) + (sd(x) / sqrt(length(x)))
+        )
+    ) %>%
+    (function(x) {
+        cbind(x[, 1:2], x[[3]])
+    }) %>% 
+    
+    mutate(
+        kd = sub("..FP$", "", condition),
+        drug = sub(".*(..FP$)", "\\1", condition)
+    ) %>% 
+    
+    ggplot() +
+    
+    geom_ribbon(
+        aes(time/60, ymin = lower, ymax = upper, fill = kd, linetype = drug),
+        alpha = 0.2,
+        color = NA
+    ) + 
+    geom_line(
+        aes(time/60, mean, color = kd, linetype = drug),
+        size = 0.25
+    ) +
+
+    scale_color_manual(
+        values = pseudotrans_rgb(KD_colors, 0.7)[1:2],
+        aesthetics = c("color", "fill")
+    ) +
+    coord_cartesian(
+        clip = "off",
+        ylim = c(0, 3),
+        xlim = c(-30/60, 450/60),
+        expand = FALSE
+    ) +
+    scale_x_continuous(
+        breaks = seq(0, 8),
+        labels = function(x) ifelse(x%%2 == 0, x, "")
+    ) +
+    labs(
+        x = "time vs. photoactivation (min)",
+        y = "PA-GFP fluorescence (au)\nmean ±SE"
+    ) +
+    theme_md_classic() +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = "none"
+    ) -> fig6e
+fig6e
+```
+
+\ 
+
+## F Lineplot relative Rpb9-paGFP signal
+
+Plotting mean±sem
+
+Note that the original quantification strategy used a random area as 
+"background". The difference is generally inconsequential, but using the 
+pre-photoactivation signal as the zero is more intuitive.
+
+```{r}
+Imaging_Rpb9PA %>% 
+    
+    split(., .$sample) %>%
+
+    lapply(function(x) {
+        
+        t0_sig <- x$bleaching_corrected[1]
+        act_sig <- x$bleaching_corrected[2] - t0_sig
+        
+        mutate(
+            x,
+            md_rel = (bleaching_corrected - t0_sig) / act_sig
+        )
+    }) %>% 
+    unname %>% 
+    do.call(rbind, .) %>% 
+
+    aggregate(
+        md_rel ~ condition*time,
+        .,
+        function(x) c(
+            mean = mean(x), 
+            lower = mean(x) - (sd(x) / sqrt(length(x))),
+            upper = mean(x) + (sd(x) / sqrt(length(x)))
+        )
+    ) %>%
+    (function(x) {
+        cbind(x[, 1:2], x[[3]])
+    }) %>% 
+    
+    mutate(
+        kd = sub("..FP$", "", condition),
+        drug = sub(".*(..FP$)", "\\1", condition)
+    ) %>% 
+    
+    ggplot() +
+    
+    geom_ribbon(
+        aes(time/60, ymin = lower, ymax = upper, fill = kd, linetype = drug),
+        alpha = 0.2,
+        color = NA
+    ) + 
+    geom_line(
+        aes(time/60, mean, color = kd, linetype = drug),
+        size = 0.25
+    ) +
+
+    scale_color_manual(
+        values = pseudotrans_rgb(KD_colors, 0.7)[1:2],
+        aesthetics = c("color", "fill")
+    ) +
+    coord_cartesian(
+        clip = "off",
+        ylim = c(0, 1),
+        xlim = c(-30/60, 450/60),
+        expand = FALSE
+    ) +
+    scale_x_continuous(
+        breaks = seq(0, 8),
+        labels = function(x) ifelse(x %% 2 == 0, x, "")
+    ) +
+    labs(
+        x = "time vs. photoactivation (min)",
+        y = "Relative PA-GFP fluorescence\nmean ±SE"
+    ) +
+    theme_md_classic() +
+    theme(
+        panel.grid = element_blank(),
+        legend.position = "none"
+    ) -> fig6f
+fig6f
+```
+
+\ 
+
+## Assemble
+
+```{r}
+fig6c + fig6d + fig6e + fig6f + 
+    plot_layout(
+        nrow = 1,
+        widths = c(1, 1, 2, 2)
+    )
+```
+\ 
+
+# Supplement 6
+
+## (A Knockdown Western)
+
+\ 
+
+## B Fraction of glands MCP-GFP positive
+
+```{r}
+Imaging_MCPGFP_prop_active %>% 
+    
+    mutate(
+        condition = sub("Luciferase", "Lucif.", condition)
+    ) %>% 
+    
+    ggplot(
+        aes(condition, MCPGFP_prop_active, fill = kd)
+    ) +
+    
+    geom_col(
+        color = NA
+    ) +
+    scale_fill_manual(
+        values = pseudotrans_rgb(KD_colors, 0.7)[1:2]
+    ) +
+    scale_y_continuous(
+        limits = c(0, 1),
+        expand = c(0, 0),
+        labels = . %>% scales::percent(accuracy = 1)
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = "",
+        y = "Loci with significant\nMCP-GFP fluor."
+    ) +
+    theme_md_classic() +
+    theme(
+        legend.position = "none",
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(
+            angle = 30,
+            hjust = 1
+        )
+    ) -> S6B
+S6B
+```
+
+\ 
+
+## C Individual lineplots fluor. signal
+
+```{r}
+Imaging_Rpb9PA %>% 
+
+    ggplot(
+        aes(
+            time / 60, 
+            bleaching_corrected / 1e4,
+            group = sample
+        )
+    ) +
+    facet_grid(~condition) +
+    geom_line(
+        alpha = 0.5
+    ) +
+    coord_cartesian(
+        clip = "off",
+        ylim = c(0, 6)
+    ) +
+    labs(
+        x = "time vs. activation (min)",
+        y = "Rpb9-PAGFP fluorescence (au)"
+    ) +
+    theme_md_bw() -> S6C
+S6C
+```
+
+\ 
+
+## D Lineplots relative signal
+
+Color according to the max fluorescence instensity following photoactivation.
+
+Using pre-photoactivation as the zero, as in the main figure.
+
+```{r}
+Imaging_Rpb9PA %>% 
+    
+    split(., .$sample) %>%
+    lapply(function(x) {
+        
+        t0_sig <- x$bleaching_corrected[1]
+        act_sig <- x$bleaching_corrected[2] - t0_sig
+        
+        mutate(
+            x,
+            md_rel = (bleaching_corrected - t0_sig) / act_sig,
+            bleaching_corrected = bleaching_corrected / 1e4, 
+            activation_signal = bleaching_corrected[2]
+        )
+    }) %>% 
+    unname %>% 
+    do.call(rbind, .) %>% 
+    
+    .[order(.$activation_signal), ] %>% 
+    
+    ggplot(
+        aes(
+            time / 60, 
+            md_rel,
+            group = sample,
+            color = log2(activation_signal)
+        )
+    ) +
+    facet_grid(~condition) +
+    geom_line(
+        alpha = 0.8
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    scale_color_viridis(
+        guide = guide_colorbar(
+            direction = "horizontal",
+            title.position = "top",
+            barheight = 0.75,
+            ticks.linewidth = 1.5
+        ),
+        breaks = seq(-2, 2, 1)
+    ) +
+    labs(
+        x = "time vs. activation (min)",
+        y = "Relative Rpb9-PAGFP fluorescence",
+        color = "Rpb9-PAGFP fluor. @ t = 0 (log2 au)"
+    ) +
+    theme_md_bw() +
+    theme(
+        legend.position = "bottom"
+    ) -> S6D
+S6D
+```
+
+\ 
+
+## E Scatter act. signal vs. decay @ 60s
+
+Comparing initial photoactivation intensity to the relative turnover @ 1 min.
+
+```{r}
+Imaging_Rpb9PA %>% 
+    
+    split(., .$sample) %>%
+    lapply(function(x) {
+        
+        t0_sig <- x$bleaching_corrected[1]
+        act_sig <- x$bleaching_corrected[2] - t0_sig
+        
+        mutate(
+            x,
+            md_rel = (bleaching_corrected - t0_sig) / act_sig,
+            bleaching_corrected = bleaching_corrected / 1e4, 
+            activation_signal = bleaching_corrected[2]
+        )
+    }) %>% 
+    unname %>% 
+    do.call(rbind, .) %>% 
+    
+    subset(time == 60) %>% 
+    
+    ggplot(
+        aes(
+            log2(activation_signal), 
+            md_rel
+        )
+    ) +
+    facet_grid(~condition) +
+    geom_point(
+        shape = 16,
+        alpha = 0.8
+    ) +
+    coord_cartesian(
+        clip = "off"
+    ) +
+    labs(
+        x = "Rpb9-PAGFP fluor. @ t = 0s (log2 au)",
+        y = "Relative Rpb9-PAGFP fluorescence @ t = 60s"
+    ) +
+    theme_md_bw() -> S6E
+S6E
+```
+
+\ 
+
+# Gather plotting data
+
+For Nature Communications, all plotted values are supposed to be tabulated and
+saved.
+
+```{r eval=FALSE}
+
+if (!"Source Data" %in% dir(here())) {
+    dir.create(here("Source Data"))
+}
+
+if (!"AllPlots" %in% dir(here("Source Data"))) {
+    dir.create(here("Source Data", "AllPlots"))
+}
+
+invisible({
+    
+    ls() %>% 
+        (function(x) {
+            c(
+                x[grep("^fig", x)],
+                x[grep("^S", x)]
+            ) 
+        }) %>% 
+        setNames(., .) %>% 
+        lapply(function(nm) {
+            get(nm)$data
+        }) %>% 
+        Map(
+            function(dat, nm) {
+                write.table(
+                    dat,
+                    here("source_data", paste0(nm, ".tsv")), 
+                    quote = FALSE,
+                    sep = "\t"
+                )
+            },
+            .,
+            names(.)
+        )
+    
+})
+```
+
+\ 
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
+
+
