@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/624615563.svg)](https://zenodo.org/badge/latestdoi/624615563)
+
 # Overview
 
 This repo contains all the code necessary to generate all figures in the
